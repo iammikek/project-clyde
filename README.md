@@ -55,10 +55,10 @@ The Early Access build includes a CLI setup wizard that handles everything — c
 | **Telegram Bot** | Chat with Clyde from Telegram with real-time streaming to the web UI |
 | **Multi-Session Chat** | Run multiple concurrent sessions with per-session streaming state |
 | **Docker Deployment** | One-command Docker Compose setup as an alternative to the CLI |
-| **OpenRouter Support** | Use any model on OpenRouter as Clyde's provider or for subagents |
+| **OpenRouter Support** | Optional single-agent Clyde or tool-free specialists — not a `Task`-tool team (see [models and delegation](docs/models-and-delegation.md)) |
 | **Global Search (Cmd+K)** | Vector similarity search across all conversations |
 | **Debug Mode** | Collapsible prompt viewer showing system prompts and agent instructions |
-| **Cost-Saving Mode** | CLI toggle to default to Sonnet/Haiku for lower-cost operation |
+| **Cost-Saving Mode** | Anthropic: Clyde Sonnet + Haiku specialists — best value that still delegates |
 | **Brutalist UI** | Dark theme with acid-green accents — built different |
 
 ---
@@ -123,7 +123,7 @@ When you run `npm run clyde` for the first time (no `.env.local` file), the CLI 
 
 1. **Check prerequisites** — verifies Node.js 20+, Python 3.10+, and Git are installed
 2. **Collect credentials** — prompts for your Supabase, Anthropic, and OpenAI keys (passwords are masked)
-3. **Choose cost mode** — toggle between Opus/Sonnet (full power) or Sonnet/Haiku (cost-saving) defaults
+3. **Choose cost mode** — Opus/Sonnet (full power) or Sonnet/Haiku (cost-saving). Cost-saving is the best value that still uses the `Task` tool. See [models and delegation](docs/models-and-delegation.md).
 4. **Generate `.env.local`** — writes your config file with all the right values (never committed to git)
 5. **Deploy the database schema** — connects directly to your Supabase Postgres instance and creates all tables, functions, and indexes automatically
 6. **Install dependencies** — runs `npm install` for the frontend and sets up a Python virtual environment with all backend packages
@@ -341,9 +341,13 @@ The Docker setup mounts the `working/` directory and Docker socket into the back
 
 ## OpenRouter Setup (Optional)
 
-OpenRouter lets you use Clyde with any model — Claude, GPT, Gemini, Llama, DeepSeek, and more.
+OpenRouter lets Clyde run as a **single agent** on any model (Claude, GPT, Gemini, Grok, Llama, …).
 
-1. Get an API key from [openrouter.ai/keys](https://openrouter.ai/keys)
+**Delegation:** OpenRouter Clyde has no Claude Agent SDK `Task` tool. Specialists become text-in/text-out (`claude_task`) and cannot call HubSpot, FreeAgent, or files. Clyde keeps those tools and typically does the work himself. For a real team, use **Anthropic** and cost-saving mode (Clyde Sonnet + Haiku specialists). Details: [models and delegation](docs/models-and-delegation.md).
+
+To add OpenRouter later:
+
+1. Get an API key from [openrouter.ai/keys](https://openrouter.ai/keys) (`sk-or-`, not an OpenAI key and not ChatGPT Plus)
 2. Add it to `.env.local`:
    ```env
    OPENROUTER_API_KEY=sk-or-your-key-here
@@ -353,9 +357,10 @@ OpenRouter lets you use Clyde with any model — Claude, GPT, Gemini, Llama, Dee
    cd backend && source .venv/bin/activate && pip install -r requirements.txt
    ```
 4. In the app, go to **Settings** and switch the **Agent Provider** to OpenRouter
-5. Choose your preferred model (e.g. `anthropic/claude-sonnet-4`, `openai/gpt-5.4`, `google/gemini-2.5-pro`)
+5. Choose your preferred model (e.g. `anthropic/claude-sonnet-4`, `openai/gpt-5.4`, `x-ai/grok-4.6`)
+6. Start a **new chat** — the current session keeps the old provider
 
-You can also assign individual subagents to OpenRouter models from the Org Chart.
+You can also assign individual subagents to OpenRouter models from the Org Chart (tool-free).
 
 ---
 

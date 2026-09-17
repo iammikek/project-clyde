@@ -38,9 +38,9 @@ type RegistrySettings = {
 };
 
 const MODEL_OPTIONS = [
-  { value: "opus" as const, label: "Opus", color: "#C8FF00", desc: "Most capable — highest quality reasoning" },
-  { value: "sonnet" as const, label: "Sonnet", color: "#00D4AA", desc: "Balanced — fast with strong performance" },
-  { value: "haiku" as const, label: "Haiku", color: "#A0A090", desc: "Fastest — lightweight and cost-efficient" },
+  { value: "opus" as const, label: "Opus", color: "#C8FF00", desc: "Best orchestrator — highest cost" },
+  { value: "sonnet" as const, label: "Sonnet", color: "#00D4AA", desc: "Best value with real Task delegation" },
+  { value: "haiku" as const, label: "Haiku", color: "#A0A090", desc: "Cheapest CEO — still has Task, weaker at routing" },
 ];
 
 function StatusDot({ ok }: { ok: boolean }) {
@@ -1446,8 +1446,8 @@ function ControlsTab() {
         </h3>
         <div className="flex gap-2">
           {([
-            { value: "anthropic" as const, label: "Anthropic", desc: "Claude Agent SDK" },
-            { value: "openrouter" as const, label: "OpenRouter", desc: "LangChain Deep Agents" },
+            { value: "anthropic" as const, label: "Anthropic", desc: "Real Task delegation — specialists use tools" },
+            { value: "openrouter" as const, label: "OpenRouter", desc: "Many models; specialists are text-only" },
           ] as const).map((opt) => {
             const isSelected = provider === opt.value;
             return (
@@ -1471,7 +1471,9 @@ function ControlsTab() {
           })}
         </div>
         <p className="text-[10px] text-text-secondary/50 mt-1.5">
-          Changes apply to the next chat session
+          {provider === "openrouter"
+            ? "OpenRouter has no Task tool — Clyde will do HubSpot/files himself. Use Anthropic for a real team. New chat required."
+            : "Anthropic: cheapest real team is Clyde Sonnet + Haiku specialists (cost-saving mode). Changes apply to the next chat."}
         </p>
       </div>
 

@@ -259,9 +259,9 @@ async function runSetupWizard() {
   // Agent provider selection
   console.log(C.bold(C.orange('  Agent Provider')));
   console.log('');
-  console.log(C.gray('  1. Anthropic  — Claude Agent SDK (default)'));
-  console.log(C.gray('  2. OpenRouter — LangChain Deep Agents (300+ models)'));
-  console.log(C.gray('  (This can be changed later in Settings)'));
+  console.log(C.gray('  1. Anthropic  — Claude Agent SDK (real Task delegation; default)'));
+  console.log(C.gray('  2. OpenRouter — 300+ models; no Task tool (Clyde does tool work himself)'));
+  console.log(C.gray('  (This can be changed later in Settings — see docs/models-and-delegation.md)'));
   console.log('');
   const providerChoice = await prompt('Choose provider (1 or 2):');
   const useOpenRouter = providerChoice.trim() === '2';
@@ -272,10 +272,12 @@ async function runSetupWizard() {
   console.log('');
   if (useOpenRouter) {
     console.log(C.gray('  Default model: anthropic/claude-sonnet-4'));
+    console.log(C.gray('  Specialists cannot use tools on OpenRouter — see docs/models-and-delegation.md'));
     console.log(C.gray('  You can change the model anytime in Settings'));
   } else {
     console.log(C.gray('  Default: Clyde uses Opus, subagents use Sonnet'));
     console.log(C.gray('  Cost-saving: Clyde uses Sonnet, subagents use Haiku'));
+    console.log(C.gray('  Cost-saving is the best value that still delegates with the Task tool'));
   }
   console.log(C.gray('  (This can be changed later in Settings)'));
   console.log('');
