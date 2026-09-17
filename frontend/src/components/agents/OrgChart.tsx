@@ -10,6 +10,7 @@ import { ModelBadge } from "./ModelBadge";
 import { TeamBadge } from "./TeamBadge";
 import { DynamicIcon, TeamIconPicker } from "./TeamIconPicker";
 import type { Agent, Team } from "@/stores/agent-store";
+import { modelNodeBorderClass, resolveAgentPlatform } from "@/lib/model-display";
 
 const API_URL =
   process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
@@ -151,20 +152,7 @@ function AgentNode({
   team?: Team | null;
   teamBorderColor?: string;
 }) {
-  const modelBorderMap: Record<string, string> = {
-    opus: "border-agent-opus",
-    sonnet: "border-agent-sonnet",
-    haiku: "border-agent-haiku",
-    "gemini-pro": "border-[#4285F4]",
-    "gemini-flash": "border-[#FBBC04]",
-    "gemini-lite": "border-[#34A853]",
-    "gpt-5.4": "border-[#10A37F]",
-    "gpt-5.4-mini": "border-[#10A37F]",
-    "gpt-5.4-nano": "border-[#10A37F]",
-  };
-  const borderColor =
-    modelBorderMap[agent.model] ||
-    (agent.model.includes("/") ? "border-[#787878]" : "border-agent-opus");
+  const borderColor = modelNodeBorderClass(agent.model);
 
   const avatarSize = 72;
 
@@ -965,12 +953,7 @@ export function OrgChart() {
           const orch = data.orchestrator;
           if (orch && orch.id) {
             const model = orch.model || "opus";
-            const platform = (
-              orch.platform ||
-              (typeof model === "string" && model.includes("/")
-                ? "openrouter"
-                : "claude")
-            ) as Agent["platform"];
+            const platform = resolveAgentPlatform(orch.platform, model);
             setOrchestrator({
               registryId: orch.id,
               name: orch.name || "Clyde",

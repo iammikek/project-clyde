@@ -4,6 +4,7 @@ import { useChatStore } from "@/stores/chat-store-provider";
 import { useAgentStore } from "@/stores/agent-store-provider";
 import { AgentAvatar } from "@/components/agents/AgentAvatar";
 import { PlatformLogo } from "@/components/agents/PlatformLogo";
+import { resolveAgentPlatform } from "@/lib/model-display";
 
 export function ActivityPanel() {
   const isConnected = useChatStore((s) => s.isConnected);
@@ -63,12 +64,10 @@ export function ActivityPanel() {
             </div>
           </div>
           <PlatformLogo
-            platform={
-              orchestrator?.platform ||
-              (typeof clydeModel === "string" && clydeModel.includes("/")
-                ? "openrouter"
-                : "claude")
-            }
+            platform={resolveAgentPlatform(
+              orchestrator?.platform,
+              String(clydeModel)
+            )}
           />
         </div>
 
