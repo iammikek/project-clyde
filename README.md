@@ -193,6 +193,7 @@ Project-Clyde/
 ├── backend/           FastAPI server + AI agents (port 8000)
 ├── working/           Runtime data (registry, prompts, memory, workflows)
 ├── docs/              Documentation and images
+│   └── test-suite-strategy.md  Proposed test suite (review)
 ├── .env.example       Template for environment variables
 └── .env.local         Your local config (not committed to git)
 ```
