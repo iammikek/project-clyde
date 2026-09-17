@@ -36,7 +36,7 @@ from claude_agent_sdk.types import (
 )
 
 from services.registry import load_registry, relativize_to_working_dir
-from services.settings import load_settings, MODEL_ID_MAP
+from services.settings import load_settings, MODEL_ID_MAP, format_runtime_models
 from services.supabase_client import save_activity_event
 from agents.tools import registry_mcp_server, init_tools, update_session_context
 
@@ -162,6 +162,8 @@ class ClydeChatManager:
         volatile_parts.append(
             f"[Current local date and time: {local_now.strftime('%A, %d %B %Y at %I:%M %p')}]\n"
         )
+
+        volatile_parts.append(format_runtime_models(self.working_dir))
 
         # Orchestrator skills (lazy-loaded — summaries only)
         try:

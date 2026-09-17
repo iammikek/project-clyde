@@ -175,6 +175,51 @@ def load_settings(working_dir: str) -> dict[str, Any]:
     return merged
 
 
+def format_runtime_models(working_dir: str) -> str:
+    """Authoritative model lineup for Clyde's session context.
+
+    The system prompt historically claimed Opus; this block is the source of
+    truth so Clyde reports Settings + the registry instead of that stale line.
+    """
+    settings = load_settings(working_dir)
+    provider = settings.get("agent_provider", "anthropic")
+    if provider == "openrouter":
+        clyde_model = settings.get("openrouter_model") or "anthropic/claude-sonnet-4"
+        new_default = (
+            settings.get("openrouter_subagent_model")
+            or settings.get("subagent_default_model")
+            or "haiku"
+        )
+    else:
+        clyde_model = settings.get("clyde_model") or "opus"
+        new_default = settings.get("subagent_default_model") or "sonnet"
+
+    lines = [
+        "## Current models (authoritative)\n",
+        f"- Provider: `{provider}`",
+        f"- You (Clyde) are running: `{clyde_model}`",
+        f"- Default for newly created subagents: `{new_default}`",
+    ]
+    try:
+        from services.registry import load_registry
+
+        registry = load_registry(working_dir)
+        for agent in registry.get("agents") or []:
+            name = agent.get("name") or "unknown"
+            model = agent.get("model") or new_default
+            platform = agent.get("platform") or (
+                "openrouter" if provider == "openrouter" else "claude"
+            )
+            lines.append(f"- {name}: `{model}` ({platform})")
+    except Exception:
+        pass
+    lines.append(
+        "\nWhen asked what models the team is on, report this list. "
+        "Do not say you are Claude Opus unless that is the Clyde value above."
+    )
+    return "\n".join(lines)
+
+
 def save_settings(working_dir: str, data: dict[str, Any]) -> None:
     """Atomically write settings.json."""
     path = _settings_path(working_dir)

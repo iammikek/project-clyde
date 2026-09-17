@@ -4,7 +4,7 @@ import { useEffect, useState, useRef } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { useSettingsStore } from "@/stores/settings-store-provider";
 import { useAgentStore } from "@/stores/agent-store-provider";
-import type { Agent } from "@/stores/agent-store";
+import { orchestratorPatchForSetting } from "@/lib/model-display";
 import { springs } from "@/lib/design-tokens";
 import { PromptEditor } from "./PromptEditor";
 import { PromptHistoryViewer } from "./PromptHistoryViewer";
@@ -1407,15 +1407,9 @@ function ControlsTab() {
         body: JSON.stringify({ [key]: value }),
       });
 
-      // When clyde_model changes, update the orchestrator in the agent store
-      if (key === "clyde_model" && orchestrator) {
-        setOrchestrator({ ...orchestrator, model: value as Agent["model"] });
-      }
-
-      // When agent_provider changes, update the orchestrator platform
-      if (key === "agent_provider" && orchestrator) {
-        const newPlatform: Agent["platform"] = value === "openrouter" ? "openrouter" : "claude";
-        setOrchestrator({ ...orchestrator, platform: newPlatform });
+      const orchestratorPatch = orchestratorPatchForSetting(key, value);
+      if (orchestratorPatch && orchestrator) {
+        setOrchestrator({ ...orchestrator, ...orchestratorPatch });
       }
 
       // Sync debug setting to global store
