@@ -685,17 +685,27 @@ async def create_integration_route(body: dict):
         if not name or int_type not in ("api", "webhook", "mcp"):
             return {"error": "name and type ('api' or 'webhook') are required"}
 
+        base_url = body.get("base_url", "").strip()
+        auth_type = body.get("auth_type", "none").strip()
         credential_env_key = body.get("credential_env_key", "").strip() or None
         credential_value = body.get("credential_value", "").strip() or None
+        from services.freeagent import is_freeagent_url, oauth_defaults
+
+        auth_type, credential_env_key = oauth_defaults(
+            base_url, auth_type, credential_env_key
+        )
+        if is_freeagent_url(base_url):
+            # Never overwrite OAuth tokens via the create form.
+            credential_value = None
         if credential_env_key and credential_value:
             _write_env_var(credential_env_key, credential_value)
 
         integration = await create_integration(
             name=name,
             int_type=int_type,
-            base_url=body.get("base_url", "").strip(),
+            base_url=base_url,
             method=body.get("method", "GET").strip().upper(),
-            auth_type=body.get("auth_type", "none").strip(),
+            auth_type=auth_type,
             credential_env_key=credential_env_key,
             headers=body.get("headers") or {},
             description=body.get("description", "").strip(),
@@ -722,10 +732,29 @@ async def update_integration_route(integration_id: str, body: dict):
             )
             return {"integration": updated}
 
-        credential_env_key = body.get("credential_env_key", "").strip() or None
+        existing = await get_integration(integration_id)
+        if not existing:
+            return {"error": "Integration not found"}
+
+        from services.freeagent import is_freeagent_url, oauth_defaults
+
+        base_url = (body.get("base_url") or existing.get("base_url") or "").strip()
+        if is_freeagent_url(base_url):
+            auth_type, credential_env_key = oauth_defaults(
+                base_url,
+                body.get("auth_type") or existing.get("auth_type") or "oauth2",
+                body.get("credential_env_key") or existing.get("credential_env_key"),
+            )
+            body["auth_type"] = auth_type
+            body["credential_env_key"] = credential_env_key
+            body.pop("credential_value", None)
+
+        credential_env_key = (body.get("credential_env_key") or "").strip() or None
         credential_value = body.pop("credential_value", None)
+        if is_freeagent_url(base_url):
+            credential_value = None
         if credential_env_key and credential_value:
-            _write_env_var(credential_env_key, credential_value.strip())
+            _write_env_var(credential_env_key, str(credential_value).strip())
 
         body.pop("credential_value", None)
         updated = await update_integration(integration_id, **body)

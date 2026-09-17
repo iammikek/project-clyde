@@ -2445,6 +2445,13 @@ async def create_integration_tool(args: dict[str, Any]) -> dict[str, Any]:
         credential_value = args.get("credential_value", "").strip() or None
         description = args.get("description", "").strip()
         documentation_url = args.get("documentation_url", "").strip() or None
+        from services.freeagent import is_freeagent_url, oauth_defaults
+
+        auth_type, credential_env_key = oauth_defaults(
+            base_url, auth_type, credential_env_key
+        )
+        if is_freeagent_url(base_url):
+            credential_value = None
 
         # Write credential to .env.local if provided
         if credential_env_key and credential_value:
@@ -2614,6 +2621,18 @@ async def get_integration_tool(args: dict[str, Any]) -> dict[str, Any]:
 
         agents = integration.get("assigned_agents") or []
         headers = integration.get("headers") or {}
+        from services.freeagent import ACCESS_TOKEN_KEY, is_freeagent_url
+
+        extra = ""
+        if is_freeagent_url(integration.get("base_url", "")):
+            connected = bool(os.environ.get(ACCESS_TOKEN_KEY, "").strip())
+            extra = (
+                "\n  FreeAgent OAuth: "
+                + ("connected" if connected else "not connected")
+                + ". Tokens live in .env.local as FREEAGENT_ACCESS_TOKEN / "
+                "FREEAGENT_REFRESH_TOKEN. Use call_integration; do not paste "
+                "tokens or invent an API key."
+            )
         return _text_response(
             f"Integration: {integration['name']}\n"
             f"  ID: {integration['id']}\n"
@@ -2627,6 +2646,7 @@ async def get_integration_tool(args: dict[str, Any]) -> dict[str, Any]:
             f"  Assigned agents: {', '.join(agents) if agents else '(none)'}\n"
             f"  Docs: {integration.get('documentation_url') or '(none)'}\n"
             f"  Description: {integration.get('description', '')}"
+            f"{extra}"
         )
     except Exception as e:
         return _error_response(f"Failed to get integration: {str(e)}")

@@ -51,6 +51,19 @@ class FreeAgentUrlTests(unittest.TestCase):
         self.assertIn("does not issue API keys", NO_API_KEY_MESSAGE)
         self.assertIn("dev.freeagent.com", NO_API_KEY_MESSAGE)
 
+    def test_oauth_defaults_fill_missing_key(self):
+        from services.freeagent import oauth_defaults
+
+        auth, key = oauth_defaults(
+            "https://api.freeagent.com/v2", "bearer", None
+        )
+        self.assertEqual(auth, "oauth2")
+        self.assertEqual(key, "FREEAGENT_ACCESS_TOKEN")
+
+        auth, key = oauth_defaults("https://api.stripe.com", "bearer", "STRIPE_API_KEY")
+        self.assertEqual(auth, "bearer")
+        self.assertEqual(key, "STRIPE_API_KEY")
+
 
 class EnvfileTests(unittest.TestCase):
     def test_write_env_var_updates_and_appends(self):

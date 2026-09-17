@@ -37,6 +37,23 @@ def is_freeagent_url(url: str) -> bool:
     return host == "api.freeagent.com" or host == "api.sandbox.freeagent.com"
 
 
+def oauth_defaults(
+    base_url: str,
+    auth_type: str = "none",
+    credential_env_key: str | None = None,
+) -> tuple[str, str | None]:
+    """Force OAuth 2.0 + FREEAGENT_ACCESS_TOKEN for FreeAgent integrations.
+
+    Clyde often creates the row as bearer/api_key with a null credential key.
+    Tokens always live in .env.local from Integrations → Connect FreeAgent.
+    """
+    if not is_freeagent_url(base_url):
+        return auth_type or "none", credential_env_key
+    if (auth_type or "none") in ("api_key", "none", "", "bearer", "basic"):
+        auth_type = "oauth2"
+    return auth_type, credential_env_key or ACCESS_TOKEN_KEY
+
+
 def is_sandbox_url(url: str) -> bool:
     host = (urlparse(url or "").hostname or "").lower()
     return host == "api.sandbox.freeagent.com"
