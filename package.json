@@ -5,7 +5,9 @@
     "clyde": "node cli/clyde.js",
     "dev:frontend": "cd frontend && npm run dev",
     "dev:backend": "cd backend && bash run.sh",
-    "lint": "cd frontend && npm run lint"
+    "lint": "cd frontend && npm run lint",
+    "test": "npm run test:cli",
+    "test:cli": "node --test cli/lib/*.test.js cli/clyde.test.js"
   },
   "dependencies": {
     "pg": "^8.13.0"
