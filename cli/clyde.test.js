@@ -45,7 +45,9 @@ describe('cli/clyde.js', () => {
   it('filters Docker BuildKit noise and remaps host ports', () => {
     assert.equal(clyde.isDockerNoise('#28 exporting layers 10.7s done'), true);
     assert.equal(clyde.isDockerNoise('Bind for 0.0.0.0:8000 failed'), false);
-    assert.deepEqual(clyde.composeUpArgs(), ['compose', '--progress', 'quiet', 'up', '--build']);
+    assert.deepEqual(clyde.composeUpArgs(), [
+      'compose', '--env-file', '.env.local', '--progress', 'quiet', 'up', '--build',
+    ]);
     const env = clyde.dockerChildEnv({
       backendPort: 8001,
       frontendPort: 3021,

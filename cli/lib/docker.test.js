@@ -2,7 +2,7 @@
 
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
-const { isDockerNoise, composeUpArgs, dockerChildEnv } = require('./docker');
+const { isDockerNoise, composeUpArgs, composeDownArgs, dockerChildEnv } = require('./docker');
 
 describe('isDockerNoise', () => {
   it('hides BuildKit step and provenance lines', () => {
@@ -25,6 +25,9 @@ describe('dockerChildEnv', () => {
     assert.equal(env.CLYDE_FRONTEND_HOST_PORT, '3020');
     assert.equal(env.CORS_ORIGINS, 'http://localhost:3020,http://127.0.0.1:3020');
     assert.equal(env.BACKEND_URL, 'http://127.0.0.1:8001');
-    assert.deepEqual(composeUpArgs(), ['compose', '--progress', 'quiet', 'up', '--build']);
+    assert.deepEqual(composeUpArgs(), [
+      'compose', '--env-file', '.env.local', '--progress', 'quiet', 'up', '--build',
+    ]);
+    assert.deepEqual(composeDownArgs(), ['compose', '--env-file', '.env.local', 'down']);
   });
 });

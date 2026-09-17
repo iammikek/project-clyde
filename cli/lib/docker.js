@@ -6,7 +6,11 @@ function isDockerNoise(line) {
 }
 
 function composeUpArgs() {
-  return ['compose', '--progress', 'quiet', 'up', '--build'];
+  return ['compose', '--env-file', '.env.local', '--progress', 'quiet', 'up', '--build'];
+}
+
+function composeDownArgs() {
+  return ['compose', '--env-file', '.env.local', 'down'];
 }
 
 function dockerChildEnv({
@@ -29,5 +33,6 @@ function dockerChildEnv({
 module.exports = {
   isDockerNoise,
   composeUpArgs,
+  composeDownArgs,
   dockerChildEnv,
 };

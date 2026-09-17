@@ -41,7 +41,7 @@ const { normalizeSecret, isStaleEmptySecret } = require('./lib/secret');
 const { portFromUrl, pickFreePort } = require('./lib/ports');
 const { interpretSupabaseRestStatus, interpretSupabaseNetworkError, inspectSupabaseJwt } = require('./lib/supabase');
 const { needsWizard, planRun, WIZARD_STEPS } = require('./lib/wizard-flow');
-const { isDockerNoise, composeUpArgs, dockerChildEnv } = require('./lib/docker');
+const { isDockerNoise, composeUpArgs, composeDownArgs, dockerChildEnv } = require('./lib/docker');
 
 // ─── Brand Colors (ANSI True Color) ────────────────────────────────
 const C = {
@@ -909,7 +909,7 @@ async function launchDocker() {
 
   const shutdown = () => {
     console.log(`\n  ${C.orange('Shutting down containers...')}`);
-    const down = spawn('docker', ['compose', 'down'], { cwd: ROOT, stdio: 'inherit' });
+    const down = spawn('docker', composeDownArgs(), { cwd: ROOT, stdio: 'inherit' });
     down.on('exit', () => process.exit(0));
     setTimeout(() => process.exit(0), 10000);
   };
@@ -1223,6 +1223,7 @@ module.exports = {
   isFirstRun,
   isDockerNoise,
   composeUpArgs,
+  composeDownArgs,
   dockerChildEnv,
   WIZARD_STEPS,
 };

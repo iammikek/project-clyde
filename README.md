@@ -350,10 +350,10 @@ Prefer the wizard: run `npm run clyde`, then choose **2. Docker**. That path sti
 
 `npm run clyde` remaps host ports when 8000 or 3020 are already bound on `0.0.0.0` (another Compose stack will take them even if `127.0.0.1:8000` looks free). It sets `CLYDE_BACKEND_HOST_PORT` / `CLYDE_FRONTEND_HOST_PORT` for Compose.
 
-Raw Compose still needs a filled `.env.local`. If 8000 is taken, set the host ports yourself:
+Raw Compose still needs a filled `.env.local`, and **must** pass it with `--env-file` so the frontend image gets the Supabase anon key at build time (`env_file:` in the YAML only reaches the running backend). If 8000 is taken, set the host ports yourself:
 
 ```bash
-CLYDE_BACKEND_HOST_PORT=8001 CLYDE_FRONTEND_HOST_PORT=3020 docker compose --progress quiet up --build
+CLYDE_BACKEND_HOST_PORT=8001 CLYDE_FRONTEND_HOST_PORT=3020 docker compose --env-file .env.local --progress quiet up --build
 ```
 
 The Docker setup mounts the `working/` directory and Docker socket into the backend container so agents can access files and tools.

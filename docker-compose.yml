@@ -1,3 +1,9 @@
+# Compose interpolates ${VAR} from the shell and a `.env` file — not from
+# env_file: (that only reaches the running container). Next.js bakes
+# NEXT_PUBLIC_* in at image build, so always pass --env-file .env.local
+# (npm run clyde does this). A missing anon key here is a blank frontend, not a
+# skipped backend env_file.
+
 services:
   backend:
     build:
