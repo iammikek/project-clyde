@@ -2413,7 +2413,9 @@ async def delete_task_tool(args: dict[str, Any]) -> dict[str, Any]:
     "For MCP servers: set 'server_type' ('stdio' or 'sse'), 'command' (for stdio), "
     "'mcp_args' (JSON array of command arguments), 'mcp_url' (for sse), and "
     "'mcp_env' (JSON object of environment variables). "
-    "auth_type can be 'bearer', 'api_key', 'basic', or 'none'. "
+    "auth_type can be 'bearer', 'oauth2', 'api_key', 'basic', or 'none'. "
+    "FreeAgent has no API keys — use auth_type 'oauth2', base_url "
+    "https://api.freeagent.com/v2, and credential_env_key FREEAGENT_ACCESS_TOKEN. "
     "credential_env_key is the env var name (e.g. 'STRIPE_API_KEY') and "
     "credential_value is the actual secret to store.",
     {
@@ -2788,17 +2790,25 @@ async def call_integration_tool(args: dict[str, Any]) -> dict[str, Any]:
         # Build headers from integration config
         headers: dict[str, str] = dict(integration.get("headers") or {})
 
-        # Apply authentication
         auth_type = integration.get("auth_type", "none")
         credential_env_key = integration.get("credential_env_key")
-        if credential_env_key and auth_type != "none":
+        from services.freeagent import FreeAgentAuthError, is_freeagent_url, request_with_refresh
+
+        if is_freeagent_url(base_url) and auth_type == "api_key":
+            return _error_response(
+                "FreeAgent does not issue API keys. Use OAuth 2.0: add "
+                "FREEAGENT_CLIENT_ID and FREEAGENT_CLIENT_SECRET to .env.local, "
+                "then Integrations → Connect FreeAgent."
+            )
+
+        if credential_env_key and auth_type not in ("none", "") and not is_freeagent_url(base_url):
             credential = os.environ.get(credential_env_key, "")
             if not credential:
                 return _error_response(
                     f"Credential not found in environment: {credential_env_key}. "
                     f"Please set the credential value first."
                 )
-            if auth_type == "bearer":
+            if auth_type in ("bearer", "oauth2"):
                 headers["Authorization"] = f"Bearer {credential}"
             elif auth_type == "api_key":
                 headers["X-API-Key"] = credential
@@ -2807,7 +2817,6 @@ async def call_integration_tool(args: dict[str, Any]) -> dict[str, Any]:
                 encoded = base64.b64encode(credential.encode()).decode()
                 headers["Authorization"] = f"Basic {encoded}"
 
-        # Parse body and query params
         request_body = None
         body_str = args.get("body", "").strip()
         if body_str:
@@ -2826,15 +2835,27 @@ async def call_integration_tool(args: dict[str, Any]) -> dict[str, Any]:
             except json.JSONDecodeError:
                 return _error_response("query_params must be a valid JSON string.")
 
-        # Execute request
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.request(
-                method=method,
-                url=url,
-                headers=headers,
-                json=request_body if request_body else None,
-                params=params,
-            )
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                if is_freeagent_url(base_url):
+                    response = await request_with_refresh(
+                        client,
+                        method,
+                        url,
+                        headers=headers,
+                        json=request_body if request_body else None,
+                        params=params,
+                    )
+                else:
+                    response = await client.request(
+                        method=method,
+                        url=url,
+                        headers=headers,
+                        json=request_body if request_body else None,
+                        params=params,
+                    )
+        except FreeAgentAuthError as exc:
+            return _error_response(str(exc))
 
         # Truncate response body to avoid context bloat
         response_text = response.text[:4000]

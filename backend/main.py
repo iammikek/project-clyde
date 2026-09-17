@@ -1,3 +1,4 @@
+import html
 import asyncio
 import base64
 import logging
@@ -14,7 +15,7 @@ import uuid
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, Form, BackgroundTasks, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 
 # Configure logging
 logging.basicConfig(
@@ -79,6 +80,7 @@ from services.performance_logger import PerformanceLogger
 from services.proactive_engine import ProactiveEngine
 from services.sleep_prevention import SleepPrevention
 from services.telegram_bot import TelegramService
+from services.envfile import write_env_var as _write_env_var
 
 # Load environment from project root
 load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env.local"))
@@ -99,37 +101,6 @@ def _safe_resolve(relative_path: str) -> Path:
     if not str(target).startswith(str(working)):
         raise ValueError(f"Path traversal blocked: {relative_path}")
     return target
-
-
-def _write_env_var(key: str, value: str) -> None:
-    """Add or update an environment variable in .env.local.
-
-    Reads the current file, updates or appends the key=value pair,
-    and writes back. Also updates os.environ for immediate use.
-    """
-    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".env.local")
-    lines: list[str] = []
-    found = False
-
-    if os.path.exists(env_path):
-        with open(env_path, "r") as f:
-            for line in f:
-                if line.strip().startswith(f"{key}="):
-                    lines.append(f"{key}={value}\n")
-                    found = True
-                else:
-                    lines.append(line)
-
-    if not found:
-        if lines and not lines[-1].endswith("\n"):
-            lines.append("\n")
-        lines.append(f"\n# Integration: {key}\n")
-        lines.append(f"{key}={value}\n")
-
-    with open(env_path, "w") as f:
-        f.writelines(lines)
-
-    os.environ[key] = value
 
 
 # Phase 4B: Cost tracking (USD)
@@ -789,6 +760,92 @@ async def assign_integration_route(integration_id: str, body: dict):
     except Exception as e:
         logger.error(f"[API] Failed to assign integration: {e}")
         return {"error": str(e)}
+
+
+def _freeagent_html(title: str, body: str, ok: bool = True) -> HTMLResponse:
+    color = "#c8ff00" if ok else "#ff3b30"
+    return HTMLResponse(
+        f"""<!doctype html>
+<html><head><meta charset="utf-8"><title>{html.escape(title)}</title></head>
+<body style="font-family:system-ui,sans-serif;background:#111;color:#eee;padding:48px;max-width:640px">
+  <h1 style="color:{color};font-size:20px">{html.escape(title)}</h1>
+  <p style="line-height:1.5;white-space:pre-wrap">{html.escape(body)}</p>
+  <p style="color:#888">You can close this tab and return to Clyde.</p>
+</body></html>"""
+    )
+
+
+@app.get("/api/integrations/freeagent/status")
+async def freeagent_status():
+    """OAuth status for FreeAgent (no API keys — access + refresh tokens only)."""
+    from services.freeagent import (
+        ACCESS_TOKEN_KEY,
+        CLIENT_ID_KEY,
+        CLIENT_SECRET_KEY,
+        REFRESH_TOKEN_KEY,
+        redirect_uri_for_backend,
+    )
+
+    redirect_uri = redirect_uri_for_backend()
+    return {
+        "has_api_keys": False,
+        "redirect_uri": redirect_uri,
+        "developer_dashboard": "https://dev.freeagent.com/",
+        "has_client_id": bool(os.environ.get(CLIENT_ID_KEY, "").strip()),
+        "has_client_secret": bool(os.environ.get(CLIENT_SECRET_KEY, "").strip()),
+        "has_access_token": bool(os.environ.get(ACCESS_TOKEN_KEY, "").strip()),
+        "has_refresh_token": bool(os.environ.get(REFRESH_TOKEN_KEY, "").strip()),
+        "connected": bool(os.environ.get(ACCESS_TOKEN_KEY, "").strip()),
+    }
+
+
+@app.get("/api/integrations/freeagent/authorize")
+async def freeagent_authorize(sandbox: bool = False):
+    """Redirect the operator to FreeAgent's OAuth approve_app page."""
+    from services.freeagent import (
+        CLIENT_ID_KEY,
+        NO_API_KEY_MESSAGE,
+        authorize_url,
+        redirect_uri_for_backend,
+    )
+
+    client_id = os.environ.get(CLIENT_ID_KEY, "").strip()
+    redirect_uri = redirect_uri_for_backend()
+    if not client_id:
+        return _freeagent_html(
+            "FreeAgent client ID missing",
+            f"{NO_API_KEY_MESSAGE} Then register this redirect URI on the app: {redirect_uri}",
+            ok=False,
+        )
+    return RedirectResponse(authorize_url(client_id, redirect_uri, sandbox=sandbox))
+
+
+@app.get("/api/integrations/freeagent/callback")
+async def freeagent_callback(code: str | None = None, error: str | None = None):
+    """Exchange the OAuth code for access + refresh tokens and store them in .env.local."""
+    from services.freeagent import (
+        FreeAgentAuthError,
+        exchange_authorization_code,
+        redirect_uri_for_backend,
+    )
+
+    if error:
+        return _freeagent_html("FreeAgent denied access", error, ok=False)
+    if not code:
+        return _freeagent_html(
+            "No authorization code",
+            "FreeAgent redirected here without a code. Start again from Integrations → Connect FreeAgent.",
+            ok=False,
+        )
+    try:
+        await exchange_authorization_code(code, redirect_uri_for_backend())
+    except FreeAgentAuthError as exc:
+        logger.error(f"[API] FreeAgent OAuth failed: {exc}")
+        return _freeagent_html("FreeAgent OAuth failed", str(exc), ok=False)
+    return _freeagent_html(
+        "FreeAgent connected",
+        "Access and refresh tokens are in .env.local. Clyde will refresh the access token when it expires (~1 hour).",
+    )
 
 
 # --- Performance (Phase 5A) ---
