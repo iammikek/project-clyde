@@ -1412,6 +1412,14 @@ function ControlsTab() {
         setOrchestrator({ ...orchestrator, model: value as Agent["model"] });
       }
 
+      if (key === "openrouter_model" && orchestrator) {
+        setOrchestrator({
+          ...orchestrator,
+          model: value as Agent["model"],
+          platform: "openrouter",
+        });
+      }
+
       // When agent_provider changes, update the orchestrator platform
       if (key === "agent_provider" && orchestrator) {
         const newPlatform: Agent["platform"] = value === "openrouter" ? "openrouter" : "claude";

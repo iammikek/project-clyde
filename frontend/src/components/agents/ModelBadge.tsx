@@ -24,7 +24,7 @@ const openrouterProviderStyles: Record<string, string> = {
   google: "bg-[#4285F4]/15 text-[#4285F4] border-[#4285F4]/30",
   meta: "bg-[#0668E1]/15 text-[#0668E1] border-[#0668E1]/30",
   deepseek: "bg-[#5B6EE1]/15 text-[#5B6EE1] border-[#5B6EE1]/30",
-  mistralai: "bg-[#FF7000]/15 text-[#FF7000] border-[#FF7000]/30",
+  "x-ai": "bg-[#787878]/15 text-[#E8E8E8] border-[#787878]/30",
 };
 
 const defaultStyle = "bg-[#8B5CF6]/15 text-[#8B5CF6] border-[#8B5CF6]/30";

@@ -42,7 +42,7 @@ from deepagents.graph import BASE_AGENT_PROMPT
 
 from agents.tools import init_tools, update_session_context
 from agents.tool_adapter import get_langchain_tools
-from services.settings import load_settings, OPENROUTER_POPULAR_MODELS
+from services.settings import load_settings, OPENROUTER_POPULAR_MODELS, format_runtime_models
 from services.registry import load_registry
 
 logger = logging.getLogger("clyde.deep_agent")
@@ -125,6 +125,8 @@ class DeepAgentChatManager:
         volatile_parts.append(
             f"[Current local date and time: {local_now.strftime('%A, %d %B %Y at %I:%M %p')}]\n"
         )
+
+        volatile_parts.append(format_runtime_models(self.working_dir))
 
         # Override delegation instructions for OpenRouter mode
         volatile_parts.append(

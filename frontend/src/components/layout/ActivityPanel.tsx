@@ -62,7 +62,14 @@ export function ActivityPanel() {
               </span>
             </div>
           </div>
-          <PlatformLogo platform={orchestrator?.platform || "claude"} />
+          <PlatformLogo
+            platform={
+              orchestrator?.platform ||
+              (typeof clydeModel === "string" && clydeModel.includes("/")
+                ? "openrouter"
+                : "claude")
+            }
+          />
         </div>
 
         {/* Subagents */}

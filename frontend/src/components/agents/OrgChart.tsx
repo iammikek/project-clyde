@@ -162,7 +162,9 @@ function AgentNode({
     "gpt-5.4-mini": "border-[#10A37F]",
     "gpt-5.4-nano": "border-[#10A37F]",
   };
-  const borderColor = modelBorderMap[agent.model] || "border-agent-opus";
+  const borderColor =
+    modelBorderMap[agent.model] ||
+    (agent.model.includes("/") ? "border-[#787878]" : "border-agent-opus");
 
   const avatarSize = 72;
 
@@ -892,6 +894,7 @@ export function OrgChart() {
   const activeAgentIds = useAgentStore((s) => s.activeAgentIds);
   const setAgents = useAgentStore((s) => s.setAgents);
   const setTeams = useAgentStore((s) => s.setTeams);
+  const setOrchestrator = useAgentStore((s) => s.setOrchestrator);
   const updateAgent = useAgentStore((s) => s.updateAgent);
   const removeAgent = useAgentStore((s) => s.removeAgent);
   const updateTeamStore = useAgentStore((s) => s.updateTeam);
@@ -958,6 +961,29 @@ export function OrgChart() {
             })
           );
           setTeams(parsedTeams);
+
+          const orch = data.orchestrator;
+          if (orch && orch.id) {
+            const model = orch.model || "opus";
+            const platform = (
+              orch.platform ||
+              (typeof model === "string" && model.includes("/")
+                ? "openrouter"
+                : "claude")
+            ) as Agent["platform"];
+            setOrchestrator({
+              registryId: orch.id,
+              name: orch.name || "Clyde",
+              role: orch.role || "CEO",
+              platform,
+              model: model as Agent["model"],
+              avatar: orch.avatar || "",
+              status: orch.status || "active",
+              tools: orch.tools || [],
+              skills: orch.skills || [],
+              team: null,
+            });
+          }
         }
       } catch {
         // Will rely on WebSocket updates
@@ -966,7 +992,7 @@ export function OrgChart() {
       }
     };
     fetchAgents();
-  }, [setAgents, setTeams]);
+  }, [setAgents, setTeams, setOrchestrator]);
 
   // Handle status change via REST
   const handleStatusChange = async (registryId: string, newStatus: string) => {

@@ -1327,7 +1327,7 @@ async def update_registry_settings(body: dict):
             if current_settings.get("agent_provider") == "openrouter":
                 try:
                     from services.registry import update_agent
-                    update_agent(WORKING_DIR, "clyde-001", {"model": or_model})
+                    update_agent(WORKING_DIR, "clyde-001", {"model": or_model, "platform": "openrouter"})
                 except Exception as e:
                     logger.warning(f"[API] Failed to sync orchestrator model: {e}")
         if "openrouter_subagent_model" in body:
