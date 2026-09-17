@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from claude_agent_sdk import tool, create_sdk_mcp_server
+from claude_agent_sdk import tool as _sdk_tool, create_sdk_mcp_server
 
 from services.registry import (
     load_registry,
@@ -37,6 +37,7 @@ from services.registry import (
     load_teams_index,
     load_team_file,
     TEAM_COLORS,
+    relativize_to_working_dir,
 )
 from services.embeddings import generate_query_embedding
 from services.settings import load_settings, GEMINI_MODEL_ID_MAP, OPENAI_MODEL_ID_MAP, OPENROUTER_MODEL_ID_MAP
@@ -92,6 +93,31 @@ def get_and_clear_pending_visuals() -> list[dict]:
     return result
 
 
+def _drop_none_args(args: dict[str, Any] | None) -> dict[str, Any]:
+    """Drop JSON nulls so optional MCP fields fall back to args.get defaults.
+
+    The model often sends ``{"model": null}`` for omitted parameters.
+    ``args.get("model", default)`` then returns None, and ``.strip()`` crashes.
+    """
+    if not args:
+        return {}
+    return {k: v for k, v in args.items() if v is not None}
+
+
+def tool(name: str, description: str, input_schema: dict[str, Any]):
+    """SDK @tool wrapper that drops JSON nulls before the handler runs."""
+
+    def decorator(fn):
+        async def wrapped(args: dict[str, Any]) -> dict[str, Any]:
+            return await fn(_drop_none_args(args))
+
+        wrapped.__name__ = getattr(fn, "__name__", name)
+        wrapped.__doc__ = fn.__doc__
+        return _sdk_tool(name, description, input_schema)(wrapped)
+
+    return decorator
+
+
 def init_tools(working_dir: str) -> None:
     """Set the working directory for all tool functions."""
     global _working_dir
@@ -114,14 +140,14 @@ def _safe_path(relative_or_virtual: str) -> str:
     Accepts:
       - Relative paths like "skills/my-skill.md"
       - Virtual paths like "/working/skills/my-skill.md"
+      - Docker-absolute paths like "/app/working/skills/my-skill.md"
       - Paths with ".." traversal (rejected)
 
     Returns the absolute path as a string.
     Raises ValueError if the resolved path escapes _working_dir.
     """
     working = Path(_working_dir).resolve()
-    # Strip virtual /working/ prefix if present
-    cleaned = relative_or_virtual.replace("/working/", "", 1).lstrip("/")
+    cleaned = relativize_to_working_dir(_working_dir, relative_or_virtual)
     target = (working / cleaned).resolve()
     if not str(target).startswith(str(working)):
         raise ValueError(
