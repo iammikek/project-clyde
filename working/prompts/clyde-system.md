@@ -297,6 +297,26 @@ A background Proactive Engine analyses usage patterns, agent performance, and te
 
 **Guidelines:** Reference insights conversationally, not as raw data dumps. Don't resurface dismissed insights. Combine with agent management tools when acting on an insight. Use `analyse_team_gaps` for manual performance reviews — reserve `trigger_analysis` for full automated sweeps.
 
+## FreeAgent
+
+When the operator asks how to connect FreeAgent, give **these** steps. Do not invent a callback on port 3000, a `.env.local` inside the working directory, or `freeagent_oauth_helper.py`.
+
+FreeAgent has no API keys. OAuth 2.0 only.
+
+1. [dev.freeagent.com](https://dev.freeagent.com/) → **My Apps** → **Create New App** (not company Settings).
+2. Homepage URL: `https://projectclyde.app`
+3. Redirect URI: `http://127.0.0.1:8000/api/integrations/freeagent/callback` (or the URI shown in Integrations if the backend is not on 8000). Leave **Enable Accountancy Practice API** **unchecked** — that flag makes approve fail with “This app is only for accountants” for a normal company login.
+4. Operator pastes into the **project-root** `.env.local` (same file as Supabase), then restarts Clyde:
+
+```
+FREEAGENT_CLIENT_ID=paste-oauth-identifier
+FREEAGENT_CLIENT_SECRET=paste-oauth-secret
+```
+
+5. **Integrations** → **FreeAgent preset** → **Connect FreeAgent**. Sign in to the live company.
+
+You cannot write project-root `.env.local` (file-access rules). Tell the operator the lines; do not create a duplicate env file under the working directory. Full copy: skill `FreeAgent` and `app/working/oauth_setup_instructions.md`.
+
 ## Working Directory
 
 Your working directory path is set at deployment. All file operations must use this absolute path. Create subdirectories as needed (e.g. `outputs/`, `exports/`, `uploads/`, `teams/`, `workflows/`). Never use relative paths or paths outside this directory.

@@ -77,9 +77,34 @@ const METHODS = ["GET", "POST", "PUT", "DELETE", "PATCH"];
 const AUTH_TYPES = [
   { value: "none", label: "None" },
   { value: "bearer", label: "Bearer Token" },
+  { value: "oauth2", label: "OAuth 2.0 (access + refresh)" },
   { value: "api_key", label: "API Key" },
   { value: "basic", label: "Basic Auth" },
 ];
+
+const FREEAGENT_PRESET: FormData = {
+  name: "FreeAgent",
+  base_url: "https://api.freeagent.com/v2",
+  method: "GET",
+  auth_type: "oauth2",
+  credential_env_key: "FREEAGENT_ACCESS_TOKEN",
+  credential_value: "",
+  headers_json: "{}",
+  description:
+    "UK accounting. FreeAgent has no API keys — connect with OAuth (access token expires ~1 hour; Clyde refreshes it).",
+  documentation_url: "https://dev.freeagent.com/docs",
+};
+
+type FreeAgentStatus = {
+  has_api_keys: boolean;
+  redirect_uri: string;
+  developer_dashboard: string;
+  has_client_id: boolean;
+  has_client_secret: boolean;
+  has_access_token: boolean;
+  has_refresh_token: boolean;
+  connected: boolean;
+};
 
 type TabType = "api" | "webhook" | "mcp";
 
@@ -92,6 +117,17 @@ export function IntegrationManager() {
   const [formData, setFormData] = useState<FormData>({ ...defaultFormData });
   const [mcpFormData, setMcpFormData] = useState<McpFormData>({ ...defaultMcpFormData });
   const [formError, setFormError] = useState<string | null>(null);
+  const [freeagent, setFreeagent] = useState<FreeAgentStatus | null>(null);
+
+  const fetchFreeAgentStatus = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_URL}/api/integrations/freeagent/status`);
+      const data = await res.json();
+      setFreeagent(data);
+    } catch {
+      setFreeagent(null);
+    }
+  }, []);
 
   const fetchIntegrations = useCallback(async () => {
     try {
@@ -108,7 +144,8 @@ export function IntegrationManager() {
 
   useEffect(() => {
     fetchIntegrations();
-  }, [fetchIntegrations]);
+    fetchFreeAgentStatus();
+  }, [fetchIntegrations, fetchFreeAgentStatus]);
 
   const filtered = integrations.filter((i) => i.type === activeTab);
 
@@ -156,12 +193,13 @@ export function IntegrationManager() {
         setFormData({ ...defaultFormData });
         setShowForm(false);
         await fetchIntegrations();
+        await fetchFreeAgentStatus();
       } catch (err) {
         console.error("Failed to create integration:", err);
         setFormError("Failed to create integration");
       }
     },
-    [formData, activeTab, fetchIntegrations]
+    [formData, activeTab, fetchIntegrations, fetchFreeAgentStatus]
   );
 
   const handleUpdate = useCallback(
@@ -408,6 +446,9 @@ export function IntegrationManager() {
     setFormError(null);
   }, []);
 
+  const isFreeAgentForm =
+    /freeagent/i.test(formData.name) || /freeagent\.com/i.test(formData.base_url);
+
   const authLabel = (type: string) =>
     AUTH_TYPES.find((a) => a.value === type)?.label || type;
 
@@ -637,6 +678,57 @@ export function IntegrationManager() {
               ) : (
                 /* ---------- API / Webhook Form ---------- */
                 <>
+                  {activeTab === "api" && (
+                    <div className="flex items-start justify-between gap-3 p-3 bg-bg-secondary/60 border border-border rounded-[2px]">
+                      <p className="text-[12px] text-text-secondary/70 leading-relaxed">
+                        FreeAgent has no API keys. Use OAuth 2.0 from{" "}
+                        <a
+                          href="https://dev.freeagent.com/"
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-accent-primary hover:underline"
+                        >
+                          dev.freeagent.com
+                        </a>{" "}
+                        (My Apps → Create New App).
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => setFormData({ ...FREEAGENT_PRESET })}
+                        className="shrink-0 px-2.5 py-1 text-[11px] font-medium border border-accent-primary text-accent-primary rounded-[2px] hover:bg-accent-primary/10"
+                      >
+                        FreeAgent preset
+                      </button>
+                    </div>
+                  )}
+
+                  {isFreeAgentForm && (
+                    <div className="p-3 bg-bg-secondary/60 border border-border rounded-[2px] space-y-2">
+                      <p className="text-[12px] text-text-primary/80">
+                        {freeagent?.connected
+                          ? "FreeAgent OAuth is connected. Access tokens expire in about an hour; Clyde refreshes them."
+                          : "Add FREEAGENT_CLIENT_ID and FREEAGENT_CLIENT_SECRET to .env.local, register this redirect URI on the FreeAgent app, then connect."}
+                      </p>
+                      {freeagent?.redirect_uri && (
+                        <p className="text-[11px] font-mono text-text-secondary/70 break-all">
+                          Redirect URI: {freeagent.redirect_uri}
+                        </p>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() =>
+                          window.open(
+                            `${API_URL}/api/integrations/freeagent/authorize`,
+                            "_blank",
+                          )
+                        }
+                        className="px-3 py-1.5 text-sm font-medium border border-accent-primary text-accent-primary rounded-[2px] hover:bg-accent-primary/10"
+                      >
+                        Connect FreeAgent
+                      </button>
+                    </div>
+                  )}
+
                   {/* Row 1: Name + Base URL */}
                   <div className="grid grid-cols-2 gap-3">
                     <div>
@@ -717,7 +809,11 @@ export function IntegrationManager() {
                               credential_env_key: e.target.value,
                             })
                           }
-                          placeholder="STRIPE_API_KEY"
+                          placeholder={
+                            formData.auth_type === "oauth2"
+                              ? "FREEAGENT_ACCESS_TOKEN"
+                              : "STRIPE_API_KEY"
+                          }
                           className={`${inputClass} font-mono`}
                         />
                       </div>
@@ -736,7 +832,9 @@ export function IntegrationManager() {
                           placeholder={
                             editingId
                               ? "Enter new value to update"
-                              : "sk-..."
+                              : formData.auth_type === "oauth2"
+                                ? "Leave blank — use Connect FreeAgent"
+                                : "sk-..."
                           }
                           className={inputClass}
                         />
