@@ -105,6 +105,39 @@ def _legacy_registry_path(working_dir: str) -> str:
     return os.path.join(working_dir, "registry.json")
 
 
+def relativize_to_working_dir(working_dir: str, file_path: str) -> str:
+    """Turn an agent-supplied path into a path relative to working_dir.
+
+    Models often emit Docker-absolute paths such as ``/app/working/teams/x.json``
+    while the file sandbox is already rooted at working_dir. Joining those
+    as-is creates a nested ``working/app/working/...`` tree. Strip known
+    prefixes (including a virtual ``/working/`` prefix) so writes land in
+    the real tree.
+    """
+    if not file_path:
+        return file_path
+    working = os.path.abspath(working_dir)
+    raw = file_path.strip()
+    prefixes = (
+        working.rstrip("/") + "/",
+        os.path.abspath(working_dir).rstrip("/") + "/",
+        "/working/",
+        "app/working/",
+    )
+    for _ in range(6):
+        if raw in (working, os.path.abspath(working_dir), "/working", "."):
+            return "."
+        stripped = False
+        for prefix in prefixes:
+            if raw.startswith(prefix):
+                raw = raw[len(prefix):]
+                stripped = True
+                break
+        if not stripped:
+            break
+    return raw or "."
+
+
 # ─── Bootstrap & Migration ───────────────────────────────────────
 
 def _bootstrap_teams(working_dir: str) -> None:
@@ -277,21 +310,39 @@ def load_registry(working_dir: str) -> dict[str, Any]:
         team_path = _team_file_path(working_dir, team_id)
         if os.path.exists(team_path):
             team_data = _read_json_cached(team_path)
-            for member in team_data.get("members", []):
-                # Re-inject the team field for backward compat
-                agent_copy = {**member}
-                if team_id != "team-unassigned":
-                    agent_copy["team"] = team_id
-                else:
-                    agent_copy["team"] = None
-                all_agents.append(agent_copy)
-            teams_meta.append({
+        else:
+            # Index lists a team whose file was never written (or was written
+            # to a nested sandbox path). Still surface the team, and heal
+            # an empty file so later CRUD has something to update.
+            logger.warning(
+                f"[REGISTRY] Missing team file for {team_id}; creating empty roster"
+            )
+            team_data = {
                 "id": team_id,
-                "name": team_entry.get("name", team_data.get("name", "")),
-                "color": team_entry.get("color", team_data.get("color", "#6B7280")),
-                "icon": team_entry.get("icon", team_data.get("icon", "Users")),
-                "created_at": team_data.get("created_at", ""),
-            })
+                "name": team_entry.get("name", ""),
+                "color": team_entry.get("color", "#6B7280"),
+                "icon": team_entry.get("icon", "Users"),
+                "workflows": [],
+                "delegation_notes": "",
+                "members": [],
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            }
+            _write_json_atomic(team_path, team_data)
+        for member in team_data.get("members", []):
+            # Re-inject the team field for backward compat
+            agent_copy = {**member}
+            if team_id != "team-unassigned":
+                agent_copy["team"] = team_id
+            else:
+                agent_copy["team"] = None
+            all_agents.append(agent_copy)
+        teams_meta.append({
+            "id": team_id,
+            "name": team_entry.get("name", team_data.get("name", "")),
+            "color": team_entry.get("color", team_data.get("color", "#6B7280")),
+            "icon": team_entry.get("icon", team_data.get("icon", "Users")),
+            "created_at": team_data.get("created_at", ""),
+        })
 
     return {
         "orchestrator": index.get("orchestrator", {}),

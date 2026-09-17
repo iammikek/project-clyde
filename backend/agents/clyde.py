@@ -35,7 +35,7 @@ from claude_agent_sdk.types import (
     HookMatcher,
 )
 
-from services.registry import load_registry
+from services.registry import load_registry, relativize_to_working_dir
 from services.settings import load_settings, MODEL_ID_MAP
 from services.supabase_client import save_activity_event
 from agents.tools import registry_mcp_server, init_tools, update_session_context
@@ -142,13 +142,19 @@ class ClydeChatManager:
         volatile_parts.append(
             f"## Working Directory\n\n"
             f"Your working directory is: `{abs_working}`\n\n"
-            "All file operations (Read, Write, Edit, Glob, Grep) MUST use paths within "
-            "this directory. Use this absolute path when saving files — for example:\n"
-            f"- `{abs_working}/outputs/report.md`\n"
-            f"- `{abs_working}/uploads/data.csv`\n"
-            f"- `{abs_working}/exports/post.md`\n\n"
-            "Create subdirectories as needed (e.g. `outputs/`, `exports/`). "
-            "Never use `~/`, `/Users/`, `/home/`, or any path outside this directory.\n"
+            "All file operations (Read, Write, Edit, Glob, Grep) MUST stay within "
+            "this directory. Prefer **relative** paths from that root — for example:\n"
+            "- `outputs/report.md`\n"
+            "- `uploads/data.csv`\n"
+            "- `exports/post.md`\n\n"
+            "Do **not** prefix paths with `app/working/` or rewrite the working "
+            "directory into a nested folder. Create subdirectories as needed "
+            "(e.g. `outputs/`, `exports/`). Never use `~/`, `/Users/`, `/home/`, "
+            "or any path outside this directory.\n\n"
+            "Do **not** Write or Edit files under `teams/` yourself. Use the "
+            "registry MCP tools (`create_agent`, `create_team`, `list_teams`, "
+            "`assign_agent_to_team`, and the other agent/team tools) — they "
+            "are the only safe way to change the org chart.\n"
         )
 
         # Current local time
@@ -415,10 +421,35 @@ class ClydeChatManager:
         """Check if a file path resolves within the working directory."""
         try:
             working = Path(self.working_dir).resolve()
-            target = Path(file_path).resolve()
+            raw = Path(file_path)
+            target = raw.resolve() if raw.is_absolute() else (working / raw).resolve()
             return str(target).startswith(str(working))
         except Exception:
             return False
+
+    def _rewrite_tool_path(self, file_path: str) -> str:
+        """Rewrite Docker-absolute / nested sandbox paths to working-dir relative."""
+        return relativize_to_working_dir(self.working_dir, file_path)
+
+    def _rewritten_file_input(
+        self, tool_name: str, tool_input: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """Return updated tool input with sandbox paths relativized, or None."""
+        if tool_name not in self._FILE_TOOLS:
+            return None
+        path_key = next(
+            (k for k in ("file_path", "path", "pattern") if k in tool_input),
+            None,
+        )
+        if not path_key:
+            return None
+        target_path = tool_input.get(path_key) or ""
+        if not target_path:
+            return None
+        rewritten = self._rewrite_tool_path(target_path)
+        if rewritten == target_path:
+            return None
+        return {**tool_input, path_key: rewritten}
 
     # File tools that should be auto-allowed when operating within the working directory
     _FILE_TOOLS = {"Read", "Write", "Edit", "Glob", "Grep"}
@@ -438,11 +469,13 @@ class ClydeChatManager:
         """
         logger.info(f"[PERMISSION] tool_name={tool_name!r}, input_keys={list(tool_input.keys())}")
 
+        updated_input = self._rewritten_file_input(tool_name, tool_input)
+
         # Headless mode (scheduler, self-improvement) — auto-allow everything
         # since there is no frontend to prompt for permission
         if self.ws is None:
             logger.info(f"[PERMISSION] Headless mode — auto-allowing {tool_name}")
-            return PermissionResultAllow()
+            return PermissionResultAllow(updated_input=updated_input)
 
         # Auto-allow all Clyde MCP tools — check both bare and prefixed names
         bare_name = tool_name.split("__")[-1] if "__" in tool_name else tool_name
@@ -453,20 +486,31 @@ class ClydeChatManager:
         # Auto-allow file tools (Read, Write, Edit, Glob, Grep) when the target
         # path is within the working directory — no permission popup needed
         if tool_name in self._FILE_TOOLS:
-            target_path = (
+            effective = updated_input or tool_input
+            check_path = (
+                effective.get("file_path")
+                or effective.get("path")
+                or effective.get("pattern")
+                or ""
+            )
+            original_path = (
                 tool_input.get("file_path")
                 or tool_input.get("path")
                 or tool_input.get("pattern")
                 or ""
             )
-            if target_path and self._is_within_working_dir(target_path):
-                logger.info(f"[PERMISSION] Auto-allowing {tool_name} within working dir: {target_path}")
-                return PermissionResultAllow()
+            if check_path and self._is_within_working_dir(check_path):
+                logger.info(
+                    f"[PERMISSION] Auto-allowing {tool_name} within working dir: "
+                    f"{check_path}"
+                    + (f" (rewrote from {original_path})" if updated_input else "")
+                )
+                return PermissionResultAllow(updated_input=updated_input)
             # If path is outside working dir, DENY immediately — don't even prompt
-            if target_path and not self._is_within_working_dir(target_path):
-                logger.warning(f"[PERMISSION] DENIED {tool_name} outside working dir: {target_path}")
+            if check_path and not self._is_within_working_dir(check_path):
+                logger.warning(f"[PERMISSION] DENIED {tool_name} outside working dir: {original_path}")
                 return PermissionResultDeny(
-                    message=f"Path '{target_path}' is outside the working directory. "
+                    message=f"Path '{original_path}' is outside the working directory. "
                     f"All file operations must stay within {self.working_dir}"
                 )
 
