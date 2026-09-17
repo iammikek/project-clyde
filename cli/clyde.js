@@ -16,6 +16,33 @@ const BACKEND_DIR = path.join(ROOT, 'backend');
 const WORKING_DIR = path.join(ROOT, 'working');
 const BIN_DIR = process.platform === 'win32' ? 'Scripts' : 'bin';
 
+const {
+  parseEnv,
+  serializeEnv,
+  isConfigured,
+  launchBindUrls,
+  envNeedsUpdate,
+  extractProjectRef,
+  isValidAnthropicKey,
+  isValidOpenRouterKey,
+  isValidOpenAIKey,
+  isValidLegacyJwtKey,
+} = require('./lib/env');
+const {
+  isAuthFailure,
+  isUnreachable,
+  isLikelyIpv6Only,
+  parsePoolerInput,
+  connectSupabasePostgres,
+  poolerOptions,
+  sessionPoolerConnectUrl,
+} = require('./lib/postgres');
+const { normalizeSecret, isStaleEmptySecret } = require('./lib/secret');
+const { portFromUrl, pickFreePort } = require('./lib/ports');
+const { interpretSupabaseRestStatus, interpretSupabaseNetworkError, inspectSupabaseJwt } = require('./lib/supabase');
+const { needsWizard, planRun, WIZARD_STEPS } = require('./lib/wizard-flow');
+const { isDockerNoise, composeUpArgs, composeDownArgs, dockerChildEnv } = require('./lib/docker');
+
 // ─── Brand Colors (ANSI True Color) ────────────────────────────────
 const C = {
   green:  (s) => `\x1b[38;2;200;255;0m${s}\x1b[0m`,
@@ -72,51 +99,136 @@ function createSpinner(message) {
 }
 
 // ─── Prompt Utilities ───────────────────────────────────────────────
-function prompt(question) {
-  return new Promise((resolve) => {
-    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-    rl.question(`  ${C.arrow} ${C.white(question)} `, (answer) => {
-      rl.close();
-      resolve(answer.trim());
-    });
-  });
+function openTerminalInput() {
+  if (process.platform === 'win32') {
+    return { input: process.stdin, close() {} };
+  }
+  try {
+    const fd = fs.openSync('/dev/tty', 'r');
+    const stream = fs.createReadStream(null, { fd, autoClose: true });
+    return {
+      input: stream,
+      close() {
+        stream.destroy();
+      },
+    };
+  } catch {
+    return { input: process.stdin, close() {} };
+  }
 }
 
-function promptSecret(question) {
+function setTtyEcho(enabled) {
+  if (process.platform === 'win32') return;
+  try {
+    const fd = fs.openSync('/dev/tty', 'r+');
+    try {
+      spawnSync('stty', [enabled ? 'echo' : '-echo'], { stdio: [fd, 'ignore', 'ignore'] });
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch { /* leave echo as-is */ }
+}
+
+process.on('exit', () => setTtyEcho(true));
+
+function promptSecretWindows(question) {
   return new Promise((resolve) => {
     process.stdout.write(`  ${C.arrow} ${C.white(question)} `);
     if (!process.stdin.isTTY) {
       const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-      rl.question('', (answer) => { rl.close(); resolve(answer.trim()); });
+      rl.question('', (answer) => {
+        rl.close();
+        process.stdout.write('\n');
+        resolve(normalizeSecret(answer));
+      });
       return;
     }
-    process.stdin.setRawMode(true);
-    process.stdin.resume();
-    process.stdin.setEncoding('utf8');
 
-    let input = '';
-    const onData = (ch) => {
-      if (ch === '\n' || ch === '\r') {
-        process.stdin.setRawMode(false);
-        process.stdin.pause();
-        process.stdin.removeListener('data', onData);
-        process.stdout.write('\n');
-        resolve(input);
-      } else if (ch === '\u007f' || ch === '\b') {
-        if (input.length > 0) {
-          input = input.slice(0, -1);
-          process.stdout.write('\b \b');
-        }
-      } else if (ch === '\u0003') {
-        console.log('');
+    const stdin = process.stdin;
+    stdin.setRawMode(true);
+    stdin.resume();
+    stdin.setEncoding('utf8');
+    let value = '';
+    const onData = (chunk) => {
+      const text = String(chunk);
+      if (text === '\u0003') {
+        stdin.setRawMode(false);
+        stdin.pause();
+        stdin.removeListener('data', onData);
         process.exit(1);
-      } else {
-        input += ch;
-        process.stdout.write('*');
       }
+      if (text === '\r' || text === '\n' || text === '\u0004') {
+        stdin.setRawMode(false);
+        stdin.pause();
+        stdin.removeListener('data', onData);
+        process.stdout.write('\n');
+        resolve(normalizeSecret(value));
+        return;
+      }
+      if (text === '\u007f' || text === '\b') {
+        value = value.slice(0, -1);
+        return;
+      }
+      value += text;
     };
-    process.stdin.on('data', onData);
+    stdin.on('data', onData);
   });
+}
+
+function promptLine(question, { secret = false } = {}) {
+  if (secret && process.platform === 'win32') {
+    return promptSecretWindows(question);
+  }
+  return new Promise((resolve) => {
+    const tty = openTerminalInput();
+    if (secret) setTtyEcho(false);
+    let restored = false;
+    const restore = () => {
+      if (!secret || restored) return;
+      restored = true;
+      setTtyEcho(true);
+    };
+    const rl = readline.createInterface({
+      input: tty.input,
+      output: process.stdout,
+      terminal: false,
+    });
+    rl.on('SIGINT', () => {
+      restore();
+      tty.close();
+      process.exit(1);
+    });
+    rl.question(`  ${C.arrow} ${C.white(question)} `, (answer) => {
+      rl.close();
+      restore();
+      tty.close();
+      if (secret) process.stdout.write('\n');
+      resolve(secret ? normalizeSecret(answer) : answer.trim());
+    });
+  });
+}
+
+function prompt(question) {
+  return promptLine(question, { secret: false });
+}
+
+async function promptSecretOnce(question) {
+  return promptLine(question, { secret: true });
+}
+
+async function promptSecret(question) {
+  let attempt = 0;
+  while (true) {
+    attempt += 1;
+    const started = Date.now();
+    const value = await promptSecretOnce(question);
+    if (isStaleEmptySecret(value, Date.now() - started, attempt)) continue;
+    if (value) {
+      console.log(C.gray(`  (${value.length} characters)`));
+      return value;
+    }
+    console.log(`  ${C.cross} ${C.red('Nothing was received. Type or paste, then press Enter.')}`);
+  }
 }
 
 async function promptWithValidation(question, validate, errorMsg, { secret = false } = {}) {
@@ -138,71 +250,21 @@ function npmInstall(cwd) {
   return spawnSync(npm, ['install'], { cwd, stdio: 'pipe', timeout: 120000 });
 }
 
-function npmRunDev(cwd, env) {
-  const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-  return spawn(npm, ['run', 'dev'], { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
-}
-
 // ─── Env File Utilities ─────────────────────────────────────────────
 function loadEnvFile() {
   if (!fs.existsSync(ENV_LOCAL)) return {};
-  const content = fs.readFileSync(ENV_LOCAL, 'utf8');
-  const env = {};
-  for (const line of content.split('\n')) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith('#')) continue;
-    const eqIndex = trimmed.indexOf('=');
-    if (eqIndex === -1) continue;
-    env[trimmed.slice(0, eqIndex)] = trimmed.slice(eqIndex + 1);
-  }
-  return env;
+  return parseEnv(fs.readFileSync(ENV_LOCAL, 'utf8'));
 }
 
 function writeEnvFile(config) {
-  const lines = [
-    '# Anthropic',
-    `ANTHROPIC_API_KEY=${config.ANTHROPIC_API_KEY}`,
-    '',
-    '# Supabase',
-    `NEXT_PUBLIC_SUPABASE_URL=${config.NEXT_PUBLIC_SUPABASE_URL}`,
-    `NEXT_PUBLIC_SUPABASE_ANON_KEY=${config.NEXT_PUBLIC_SUPABASE_ANON_KEY}`,
-    `SUPABASE_SERVICE_ROLE_KEY=${config.SUPABASE_SERVICE_ROLE_KEY}`,
-    '',
-    '# OpenAI (embeddings)',
-    `OPENAI_API_KEY=${config.OPENAI_API_KEY}`,
-    '',
-    '# Backend',
-    `BACKEND_URL=${config.BACKEND_URL}`,
-    `NEXT_PUBLIC_BACKEND_WS_URL=${config.NEXT_PUBLIC_BACKEND_WS_URL}`,
-    '',
-    '# Working directory (absolute path)',
-    `WORKING_DIR=${config.WORKING_DIR}`,
-    '',
-  ];
-  fs.writeFileSync(ENV_LOCAL, lines.join('\n'));
+  const existing = fs.existsSync(ENV_LOCAL) ? loadEnvFile() : {};
+  fs.writeFileSync(ENV_LOCAL, serializeEnv({ ...existing, ...config }));
 }
 
 // ─── First-Run Detection ────────────────────────────────────────────
 function isFirstRun() {
-  if (!fs.existsSync(ENV_LOCAL)) return true;
-
-  const content = fs.readFileSync(ENV_LOCAL, 'utf8');
-  const placeholders = ['sk-ant-...', 'your-project.supabase.co', 'eyJ...', 'sk-proj-...', '/path/to/'];
-  const required = [
-    'ANTHROPIC_API_KEY',
-    'NEXT_PUBLIC_SUPABASE_URL',
-    'NEXT_PUBLIC_SUPABASE_ANON_KEY',
-    'SUPABASE_SERVICE_ROLE_KEY',
-    'OPENAI_API_KEY',
-  ];
-
-  for (const key of required) {
-    const match = content.match(new RegExp(`^${key}=(.+)$`, 'm'));
-    if (!match) return true;
-    const value = match[1].trim();
-    if (!value || placeholders.some(p => value.includes(p))) return true;
-  }
-  return false;
+  const envExists = fs.existsSync(ENV_LOCAL);
+  return needsWizard(envExists, envExists ? loadEnvFile() : {});
 }
 
 // ─── Prerequisites Check ────────────────────────────────────────────
@@ -286,31 +348,44 @@ async function runSetupWizard() {
   console.log(C.gray('  Credentials are stored locally in .env.local and never shared.\n'));
 
   // Supabase
-  console.log(C.bold(C.orange('  Supabase')) + C.gray('  (Dashboard > Settings > API)'));
+  console.log(C.bold(C.orange('  Supabase')));
+  console.log('');
+  console.log(C.gray('  Open your project, then:'));
+  console.log(C.gray('    Gear (bottom left) > Project Settings > API Keys'));
+  console.log(C.gray('    or click Connect at the top of the project.'));
+  console.log('');
+  console.log(C.gray('  Use the Legacy API keys tab:'));
+  console.log(C.gray('    anon / public     → Anon Key  (starts with eyJ)'));
+  console.log(C.gray('    service_role      → Service Role Key  (click the eye)'));
+  console.log(C.gray('  Do not paste sb_publishable_ or sb_secret_ keys here.'));
+  console.log(C.gray('  Paste is fine — input is hidden. Press Enter when done.'));
   console.log('');
 
   const supabaseUrl = await promptWithValidation(
     'Project URL:',
     (v) => /^https?:\/\/[a-z0-9]+\.supabase\.co\/?$/.test(v),
-    'Expected format: https://<ref>.supabase.co'
+    'Expected format: https://<ref>.supabase.co — copy it from Connect or API Keys'
   );
 
   const supabaseAnonKey = await promptWithValidation(
     'Anon Key:',
-    (v) => v.startsWith('eyJ') && v.length > 30,
-    'Anon key should start with "eyJ"',
+    isValidLegacyJwtKey,
+    'Use the legacy anon / public key (starts with eyJ). Not sb_publishable_.',
     { secret: true }
   );
 
   const supabaseServiceKey = await promptWithValidation(
     'Service Role Key:',
-    (v) => v.startsWith('eyJ') && v.length > 30,
-    'Service role key should start with "eyJ"',
+    isValidLegacyJwtKey,
+    'Use the legacy service_role key (starts with eyJ). Not sb_secret_.',
     { secret: true }
   );
 
   console.log('');
   console.log(C.bold(C.orange('  Database')) + C.gray('  (password set when you created the project)'));
+  console.log('');
+  console.log(C.gray('  If schema deploy cannot reach the IPv6-only direct host, you will copy'));
+  console.log(C.gray('  the Session pooler URI from Connect (not Direct, not Transaction pooler).'));
   console.log('');
 
   const dbPassword = await promptSecret('Database Password:');
@@ -322,58 +397,75 @@ async function runSetupWizard() {
   let openrouterKey = '';
 
   if (useOpenRouter) {
-    console.log(C.bold(C.orange('  API Keys')) + C.gray('  (openrouter.ai/keys | platform.openai.com)'));
+    console.log(C.bold(C.orange('  API Keys')));
+    console.log('');
+    console.log(C.gray('  OpenRouter — https://openrouter.ai/keys'));
+    console.log(C.gray('    Sign in > Create Key > copy it immediately (starts with sk-or-).'));
+    console.log(C.gray('    Add credit at https://openrouter.ai/settings/credits'));
+    console.log(C.gray('    or the key will work in this wizard but API calls will fail.'));
+    console.log(C.gray('  This is not an OpenAI key and not ChatGPT Plus.'));
     console.log('');
 
     openrouterKey = await promptWithValidation(
       'OpenRouter API Key:',
-      (v) => v.startsWith('sk-or-') && v.length > 20,
-      'Key should start with "sk-or-"',
+      isValidOpenRouterKey,
+      'OpenRouter keys start with sk-or- — create one at https://openrouter.ai/keys',
       { secret: true }
     );
 
     console.log('');
-    console.log(C.gray('  OpenAI key is used for embeddings. You can skip this'));
+    console.log(C.gray('  OpenAI is only for embeddings (search), not chat.'));
+    console.log(C.gray('  Keys: https://platform.openai.com/api-keys  (sk- or sk-proj-)'));
+    console.log(C.gray('  Not the Home page, and not ChatGPT. You can skip this'));
     console.log(C.gray('  if you want embeddings to go through OpenRouter instead.'));
     console.log('');
     const wantsOpenai = await promptYesNo('Add a separate OpenAI API Key for embeddings?');
     if (wantsOpenai) {
       openaiKey = await promptWithValidation(
         'OpenAI API Key:',
-        (v) => v.startsWith('sk-') && v.length > 20,
-        'Key should start with "sk-"',
+        isValidOpenAIKey,
+        'Use https://platform.openai.com/api-keys — key should start with sk- (not sk-or-)',
         { secret: true }
       );
     }
   } else {
-    console.log(C.bold(C.orange('  API Keys')) + C.gray('  (console.anthropic.com | platform.openai.com)'));
+    console.log(C.bold(C.orange('  API Keys')));
+    console.log('');
+    console.log(C.gray('  Anthropic — https://console.anthropic.com/settings/keys  (sk-ant-)'));
+    console.log(C.gray('  OpenAI    — https://platform.openai.com/api-keys  (sk- or sk-proj-)'));
+    console.log(C.gray('    OpenAI is for embeddings. Not ChatGPT, not platform.openai.com/home.'));
     console.log('');
 
     anthropicKey = await promptWithValidation(
       'Anthropic API Key:',
-      (v) => v.startsWith('sk-ant-') && v.length > 20,
-      'Key should start with "sk-ant-"',
+      isValidAnthropicKey,
+      'Key should start with "sk-ant-" — https://console.anthropic.com/settings/keys',
       { secret: true }
     );
 
-    openaiKey = await promptWithValidation(
-      'OpenAI API Key:',
-      (v) => v.startsWith('sk-') && v.length > 20,
-      'Key should start with "sk-"',
-      { secret: true }
-    );
+    console.log('');
+    console.log(C.gray('  OpenAI is only for embeddings (search), not chat.'));
+    console.log(C.gray('  You can skip this and add OPENAI_API_KEY to .env.local later.'));
+    console.log('');
+    const wantsOpenai = await promptYesNo('Add an OpenAI API Key for embeddings?');
+    if (wantsOpenai) {
+      openaiKey = await promptWithValidation(
+        'OpenAI API Key:',
+        isValidOpenAIKey,
+        'Use https://platform.openai.com/api-keys — key should start with sk- (not sk-or-)',
+        { secret: true }
+      );
+    }
   }
 
   // Extract project ref
-  const refMatch = supabaseUrl.match(/https?:\/\/([a-z0-9]+)\.supabase\.co/);
-  const projectRef = refMatch[1];
+  const projectRef = extractProjectRef(supabaseUrl);
 
   const config = {
     NEXT_PUBLIC_SUPABASE_URL: supabaseUrl.replace(/\/$/, ''),
     NEXT_PUBLIC_SUPABASE_ANON_KEY: supabaseAnonKey,
     SUPABASE_SERVICE_ROLE_KEY: supabaseServiceKey,
-    BACKEND_URL: 'http://localhost:8000',
-    NEXT_PUBLIC_BACKEND_WS_URL: 'ws://localhost:8000',
+    BACKEND_URL: 'http://127.0.0.1:8000',
     WORKING_DIR: WORKING_DIR,
   };
 
@@ -386,62 +478,116 @@ async function runSetupWizard() {
 }
 
 // ─── Supabase Credential Test ────────────────────────────────────
-function testSupabaseCredentials(supabaseUrl, serviceRoleKey) {
+function probeSupabaseKey(supabaseUrl, key, which, jwtOk = false) {
   return new Promise((resolve) => {
-    const url = new URL('/rest/v1/', supabaseUrl);
-    const options = {
+    let url;
+    try {
+      url = new URL('/rest/v1/', supabaseUrl);
+    } catch (err) {
+      resolve(interpretSupabaseNetworkError(err));
+      return;
+    }
+    const req = https.request({
       hostname: url.hostname,
       port: 443,
       path: url.pathname,
       method: 'GET',
       headers: {
-        'apikey': serviceRoleKey,
-        'Authorization': `Bearer ${serviceRoleKey}`,
+        'apikey': key,
+        'Authorization': `Bearer ${key}`,
+        'Accept': 'application/json',
       },
       timeout: 10000,
-    };
-
-    const req = https.request(options, (res) => {
-      // 200 = valid credentials, 404 = valid auth but no tables yet (still OK)
-      if (res.statusCode === 200 || res.statusCode === 404) {
-        resolve({ ok: true });
-      } else if (res.statusCode === 401 || res.statusCode === 403) {
-        resolve({ ok: false, reason: 'auth', message: 'Invalid API key — check your Supabase Service Role Key.' });
-      } else {
-        resolve({ ok: false, reason: 'http', message: `Unexpected HTTP ${res.statusCode} from Supabase.` });
-      }
-      res.resume(); // drain
+    }, (res) => {
+      resolve(interpretSupabaseRestStatus(res.statusCode, which, { jwtOk }));
+      res.resume();
     });
 
-    req.on('error', (err) => {
-      if (err.code === 'ENOTFOUND' || err.code === 'ERR_TLS_CERT_ALTNAME_INVALID') {
-        resolve({ ok: false, reason: 'dns', message: 'Could not reach that Supabase URL — check the Project URL.' });
-      } else if (err.code === 'ETIMEDOUT' || err.code === 'ECONNREFUSED') {
-        resolve({ ok: false, reason: 'network', message: 'Connection timed out — check the Project URL and your network.' });
-      } else {
-        resolve({ ok: false, reason: 'unknown', message: `Connection failed: ${err.message}` });
-      }
-    });
-
+    req.on('error', (err) => resolve(interpretSupabaseNetworkError(err)));
     req.on('timeout', () => {
       req.destroy();
       resolve({ ok: false, reason: 'timeout', message: 'Connection timed out — check the Project URL.' });
     });
-
     req.end();
   });
 }
 
-// ─── Schema Deployment ──────────────────────────────────────────────
-async function deploySchema(projectRef, dbPassword) {
-  const spinner = createSpinner('Deploying database schema...');
+async function testSupabaseCredentials(supabaseUrl, serviceRoleKey, anonKey) {
+  const projectRef = extractProjectRef(supabaseUrl);
 
-  // Ensure pg is available
-  let pg;
+  const serviceJwt = inspectSupabaseJwt(serviceRoleKey, 'service_role', projectRef);
+  if (!serviceJwt.ok) return serviceJwt;
+  const service = await probeSupabaseKey(supabaseUrl, serviceRoleKey, 'service_role', true);
+  if (!service.ok) return service;
+
+  if (!anonKey) return service;
+  const anonJwt = inspectSupabaseJwt(anonKey, 'anon', projectRef);
+  if (!anonJwt.ok) return anonJwt;
+  return probeSupabaseKey(supabaseUrl, anonKey, 'anon', true);
+}
+
+// ─── Schema Deployment ──────────────────────────────────────────────
+function printSchemaManualSteps() {
+  console.log(C.gray('  Apply the schema in the dashboard (no database password needed):'));
+  console.log(C.gray('    1. Open the project > SQL Editor > New query'));
+  console.log(C.gray('    2. Paste the contents of db/schema.sql'));
+  console.log(C.gray('    3. Run — it is safe to run more than once.'));
+  console.log(C.gray('  Or reset the DB password and re-run: npm run clyde -- --deploy-schema\n'));
+}
+
+function printDatabasePasswordHelp() {
+  console.log(C.gray('  This is the Postgres password from Project Settings → Database,'));
+  console.log(C.gray('  not the password you use to log into supabase.com.'));
+  console.log(C.gray('  Reset it: Project Settings → Database → Reset database password.\n'));
+}
+
+function printPoolerHelp(projectRef) {
+  console.log(C.gray('  1. Click Connect at the top of the project (green button).'));
+  console.log(C.gray('  2. Stay on Connection String (not App Frameworks / ORMs / MCP).'));
+  console.log(C.gray('  3. Choose Session pooler — not Direct connection, not Transaction pooler.'));
+  console.log(C.gray('  4. Copy the URI. Host ends in pooler.supabase.com, port 5432.'));
+  console.log(C.gray('     Leave [YOUR-PASSWORD] as-is; this wizard uses the password you typed.'));
+  if (projectRef) {
+    console.log(C.gray(`  Direct link: ${sessionPoolerConnectUrl(projectRef)}`));
+  }
+  console.log('');
+}
+
+async function pgConnect(pg, options) {
+  const client = new pg.Client(options);
   try {
-    pg = require('pg');
+    await client.connect();
+    return client;
+  } catch (err) {
+    try { await client.end(); } catch { /* ignore */ }
+    throw err;
+  }
+}
+
+async function connectPostgres(pg, projectRef, dbPassword, poolerInput) {
+  return connectSupabasePostgres({
+    connect: (options) => pgConnect(pg, options),
+    projectRef,
+    dbPassword,
+    poolerInput,
+  });
+}
+
+async function askForPooler(projectRef, dbPassword) {
+  while (true) {
+    const raw = await prompt('Paste Session pooler URI:');
+    try {
+      return parsePoolerInput(raw, projectRef, dbPassword);
+    } catch (err) {
+      console.log(`  ${C.cross} ${C.red(err.message)}`);
+    }
+  }
+}
+
+async function requirePg() {
+  try {
+    return require('pg');
   } catch {
-    spinner.succeed('');
     const installSpinner = createSpinner('Installing pg driver...');
     const result = npmInstall(ROOT);
     if (result.status !== 0) {
@@ -449,27 +595,44 @@ async function deploySchema(projectRef, dbPassword) {
       process.exit(1);
     }
     installSpinner.succeed('pg driver installed');
-    pg = require('pg');
-    return deploySchemaWithPg(pg, projectRef, dbPassword);
+    return require('pg');
   }
+}
 
+async function deploySchema(projectRef, dbPassword) {
+  const pg = await requirePg();
   return deploySchemaWithPg(pg, projectRef, dbPassword);
 }
 
 async function deploySchemaWithPg(pg, projectRef, dbPassword) {
-  const spinner = createSpinner('Deploying database schema...');
+  let spinner = createSpinner('Deploying database schema...');
   try {
-    const client = new pg.Client({
-      host: `db.${projectRef}.supabase.co`,
-      port: 5432,
-      database: 'postgres',
-      user: 'postgres',
-      password: dbPassword,
-      ssl: { rejectUnauthorized: false },
-      connectionTimeoutMillis: 15000,
-    });
-
-    await client.connect();
+    let client;
+    try {
+      client = await connectPostgres(pg, projectRef, dbPassword, '');
+    } catch (err) {
+      if (isAuthFailure(err)) throw err;
+      if (err.code !== 'PG_UNREACHABLE' && !isUnreachable(err)) throw err;
+      spinner.fail(
+        isLikelyIpv6Only(err)
+          ? 'Direct database host is unreachable (IPv6-only on new projects)'
+          : 'Direct database host is unreachable'
+      );
+      printPoolerHelp(projectRef);
+      const parsed = await askForPooler(projectRef, dbPassword);
+      parsed.password = dbPassword;
+      spinner = createSpinner('Connecting via session pooler...');
+      try {
+        client = await pgConnect(pg, poolerOptions(parsed));
+      } catch (poolerErr) {
+        if (!isAuthFailure(poolerErr)) throw poolerErr;
+        spinner.fail(`Database password was rejected (${dbPassword.length} characters sent)`);
+        printDatabasePasswordHelp();
+        parsed.password = await promptSecret('Database Password:');
+        spinner = createSpinner('Retrying session pooler...');
+        client = await pgConnect(pg, poolerOptions(parsed));
+      }
+    }
 
     const schema = fs.readFileSync(SCHEMA_SQL, 'utf8');
     await client.query(schema);
@@ -479,17 +642,22 @@ async function deploySchemaWithPg(pg, projectRef, dbPassword) {
   } catch (err) {
     spinner.fail('Database schema deployment failed');
 
-    if (err.code === 'ECONNREFUSED' || err.code === 'ENOTFOUND') {
-      console.log(C.red(`\n  Could not connect to db.${projectRef}.supabase.co`));
-      console.log(C.gray('  Check your Supabase URL and ensure the project is active.\n'));
-    } else if (err.message && err.message.includes('password authentication failed')) {
-      console.log(C.red('\n  Database password is incorrect.'));
-      console.log(C.gray('  Reset it in Supabase Dashboard > Settings > Database.\n'));
+    if (err.code === 'PG_UNREACHABLE' || isUnreachable(err)) {
+      console.log(C.red(`\n  Could not connect to Postgres.`));
+      console.log(C.gray('  The REST API can still work; only the schema deploy uses this host.\n'));
+      printSchemaManualSteps();
+    } else if (isAuthFailure(err)) {
+      console.log(C.red('\n  Database password was rejected by Postgres.'));
+      printDatabasePasswordHelp();
+      console.log(C.gray('  If the character count above does not match what you typed,'));
+      console.log(C.gray('  the terminal dropped characters — paste the password instead.\n'));
+      printSchemaManualSteps();
     } else if (err.message && err.message.includes('already exists')) {
       console.log(C.gray('  Schema already exists — skipping.\n'));
       return;
     } else {
       console.log(C.red(`\n  ${err.message}\n`));
+      printSchemaManualSteps();
     }
 
     const answer = await prompt('Continue without schema deployment? (y/n):');
@@ -655,6 +823,26 @@ function checkDocker() {
   }
 }
 
+async function resolveLaunchBind() {
+  const envFile = loadEnvFile();
+  const preferredBackend = portFromUrl(envFile.BACKEND_URL || envFile.NEXT_PUBLIC_BACKEND_URL, 8000);
+  const preferredFrontend = Number(envFile.FRONTEND_PORT) || 3020;
+  const backendPort = await pickFreePort(preferredBackend);
+  const frontendPort = await pickFreePort(preferredFrontend);
+  const bind = launchBindUrls(backendPort, frontendPort);
+  if (envNeedsUpdate(envFile, bind)) {
+    writeEnvFile(bind);
+    Object.assign(envFile, bind);
+  }
+  if (backendPort !== preferredBackend) {
+    console.log(C.gray(`  Port ${preferredBackend} is in use — backend on ${backendPort}.`));
+  }
+  if (frontendPort !== preferredFrontend) {
+    console.log(C.gray(`  Port ${preferredFrontend} is in use — frontend on ${frontendPort}.`));
+  }
+  return { envFile, backendPort, frontendPort, bind };
+}
+
 // ─── Docker Launcher ────────────────────────────────────────────────
 async function launchDocker() {
   console.log(C.bold(C.green('  STARTING CLYDE (Docker)\n')));
@@ -665,12 +853,20 @@ async function launchDocker() {
     process.exit(1);
   }
 
+  const { envFile, backendPort, frontendPort, bind } = await resolveLaunchBind();
+
   console.log(`  ${C.dot} ${C.teal('Building and starting containers...')}`);
   console.log('');
 
-  const docker = spawn('docker', ['compose', 'up', '--build'], {
+  const docker = spawn('docker', composeUpArgs(), {
     cwd: ROOT,
-    env: { ...process.env, ...loadEnvFile() },
+    env: dockerChildEnv({
+      processEnv: process.env,
+      envFile,
+      bind,
+      backendPort,
+      frontendPort,
+    }),
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 
@@ -678,22 +874,22 @@ async function launchDocker() {
 
   const formatLine = (line) => {
     const trimmed = line.trim();
-    if (!trimmed) return;
-    if (trimmed.includes('ERROR') || trimmed.includes('Traceback')) {
+    if (!trimmed || isDockerNoise(trimmed)) return;
+    if (trimmed.includes('ERROR') || trimmed.includes('Traceback') || /failed/i.test(trimmed)) {
       console.log(`  ${C.orange('[docker]')} ${C.red(trimmed)}`);
     } else {
       console.log(`  ${C.orange('[docker]')} ${C.gray(trimmed)}`);
     }
 
-    if (!browserOpened && (trimmed.includes('Ready') || trimmed.includes('localhost:3020') || trimmed.includes(':3020'))) {
+    if (!browserOpened && (trimmed.includes('Ready') || trimmed.includes(`localhost:${frontendPort}`))) {
       browserOpened = true;
       setTimeout(() => {
         const cmd = process.platform === 'darwin' ? 'open'
           : process.platform === 'win32' ? 'start'
           : 'xdg-open';
         try {
-          execFileSync(cmd, ['http://localhost:3020'], { stdio: 'ignore' });
-          console.log(`\n  ${C.check} ${C.white('Opened')} ${C.green('http://localhost:3020')} ${C.white('in your browser')}\n`);
+          execFileSync(cmd, [`http://localhost:${frontendPort}`], { stdio: 'ignore' });
+          console.log(`\n  ${C.check} ${C.white('Opened')} ${C.green(`http://localhost:${frontendPort}`)} ${C.white('in your browser')}\n`);
         } catch { /* best-effort */ }
       }, 1500);
     }
@@ -706,14 +902,14 @@ async function launchDocker() {
     data.toString().split('\n').forEach(formatLine);
   });
 
-  console.log(`  ${C.dot} ${C.teal('Backend')}  ${C.gray('\u2192')} ${C.white('http://localhost:8000')}`);
-  console.log(`  ${C.dot} ${C.green('Frontend')} ${C.gray('\u2192')} ${C.white('http://localhost:3020')}`);
+  console.log(`  ${C.dot} ${C.teal('Backend')}  ${C.gray('\u2192')} ${C.white(`http://127.0.0.1:${backendPort}`)}`);
+  console.log(`  ${C.dot} ${C.green('Frontend')} ${C.gray('\u2192')} ${C.white(`http://localhost:${frontendPort}`)}`);
   console.log('');
   console.log(C.gray('  Press Ctrl+C to stop\n'));
 
   const shutdown = () => {
     console.log(`\n  ${C.orange('Shutting down containers...')}`);
-    const down = spawn('docker', ['compose', 'down'], { cwd: ROOT, stdio: 'inherit' });
+    const down = spawn('docker', composeDownArgs(), { cwd: ROOT, stdio: 'inherit' });
     down.on('exit', () => process.exit(0));
     setTimeout(() => process.exit(0), 10000);
   };
@@ -735,15 +931,7 @@ function getRunMode() {
 }
 
 function setRunMode(mode) {
-  let content = '';
-  if (fs.existsSync(ENV_LOCAL)) {
-    content = fs.readFileSync(ENV_LOCAL, 'utf8');
-    // Remove existing RUN_MODE line if present
-    content = content.replace(/^RUN_MODE=.*\n?/m, '');
-  }
-  if (!content.endsWith('\n')) content += '\n';
-  content += `RUN_MODE=${mode}\n`;
-  fs.writeFileSync(ENV_LOCAL, content);
+  writeEnvFile({ RUN_MODE: mode });
 }
 
 async function chooseRunMode() {
@@ -766,9 +954,20 @@ async function chooseRunMode() {
 async function launchApp() {
   console.log(C.bold(C.green('  STARTING CLYDE\n')));
 
-  const env = { ...process.env, ...loadEnvFile() };
+  const { envFile, backendPort, frontendPort, bind } = await resolveLaunchBind();
+  const env = {
+    ...process.env,
+    ...envFile,
+    ...bind,
+    CORS_ORIGINS: `http://localhost:${frontendPort},http://127.0.0.1:${frontendPort}`,
+  };
   const children = [];
   let browserOpened = false;
+
+  if (!isConfigured(envFile)) {
+    console.log(C.gray('  Provider keys are incomplete (need ANTHROPIC_API_KEY or OPENROUTER_API_KEY).'));
+    console.log(C.gray('  The app will boot in limited mode until those are set in .env.local.\n'));
+  }
 
   // Backend
   const uvicorn = path.join(BACKEND_DIR, '.venv', BIN_DIR, 'uvicorn');
@@ -789,7 +988,7 @@ async function launchApp() {
     }
   }
   const backend = spawn(uvicorn, [
-    'main:app', '--reload', '--host', '127.0.0.1', '--port', '8000',
+    'main:app', '--reload', '--host', '127.0.0.1', '--port', String(backendPort),
   ], {
     cwd: BACKEND_DIR,
     env,
@@ -815,22 +1014,27 @@ async function launchApp() {
   });
 
   // Frontend
-  const frontend = npmRunDev(FRONTEND_DIR, env);
+  const nextBin = path.join(FRONTEND_DIR, 'node_modules', '.bin', process.platform === 'win32' ? 'next.cmd' : 'next');
+  const frontend = spawn(nextBin, ['dev', '--port', String(frontendPort)], {
+    cwd: FRONTEND_DIR,
+    env,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
   children.push(frontend);
 
   frontend.stdout.on('data', (data) => {
     const text = data.toString();
     text.split('\n').forEach(l => formatLine('[frontend]', C.green, l));
 
-    if (!browserOpened && (text.includes('Ready') || text.includes('localhost:3020'))) {
+    if (!browserOpened && (text.includes('Ready') || text.includes(`localhost:${frontendPort}`))) {
       browserOpened = true;
       setTimeout(() => {
         const cmd = process.platform === 'darwin' ? 'open'
           : process.platform === 'win32' ? 'start'
           : 'xdg-open';
         try {
-          execFileSync(cmd, ['http://localhost:3020'], { stdio: 'ignore' });
-          console.log(`\n  ${C.check} ${C.white('Opened')} ${C.green('http://localhost:3020')} ${C.white('in your browser')}\n`);
+          execFileSync(cmd, [`http://localhost:${frontendPort}`], { stdio: 'ignore' });
+          console.log(`\n  ${C.check} ${C.white('Opened')} ${C.green(`http://localhost:${frontendPort}`)} ${C.white('in your browser')}\n`);
         } catch { /* best-effort */ }
       }, 1500);
     }
@@ -840,8 +1044,8 @@ async function launchApp() {
   });
 
   // Status line
-  console.log(`  ${C.dot} ${C.teal('Backend')}  ${C.gray('\u2192')} ${C.white('http://127.0.0.1:8000')}`);
-  console.log(`  ${C.dot} ${C.green('Frontend')} ${C.gray('\u2192')} ${C.white('http://localhost:3020')}`);
+  console.log(`  ${C.dot} ${C.teal('Backend')}  ${C.gray('\u2192')} ${C.white(`http://127.0.0.1:${backendPort}`)}`);
+  console.log(`  ${C.dot} ${C.green('Frontend')} ${C.gray('\u2192')} ${C.white(`http://localhost:${frontendPort}`)}`);
   console.log('');
   console.log(C.gray('  Press Ctrl+C to stop\n'));
 
@@ -871,13 +1075,52 @@ async function launchApp() {
   });
 }
 
+async function deploySchemaFromEnv() {
+  const env = loadEnvFile();
+  const projectRef = extractProjectRef(env.NEXT_PUBLIC_SUPABASE_URL);
+  console.log(C.bold(C.orange('  Deploy schema\n')));
+  console.log(C.gray('  Paste is fine — input is hidden. A character count is shown after Enter.\n'));
+  const dbPassword = await promptSecret('Database Password:');
+  console.log('');
+  await deploySchema(projectRef, dbPassword);
+}
+
 // ─── Main ───────────────────────────────────────────────────────────
 async function main() {
   printHeader();
 
   let runMode = getRunMode();
+  const envExists = fs.existsSync(ENV_LOCAL);
+  const fileEnv = envExists ? loadEnvFile() : {};
+  const plan = planRun({
+    argv: process.argv,
+    env: process.env,
+    envExists,
+    fileEnv,
+    runMode,
+  });
 
-  if (isFirstRun()) {
+  if (plan.action === 'deploy-schema') {
+    ensureWorkingDir();
+    try {
+      await deploySchemaFromEnv();
+    } catch (err) {
+      console.log(C.red(`\n  ${err.message}\n`));
+      printSchemaManualSteps();
+      process.exit(1);
+    }
+    if (isFirstRun()) {
+      console.log(C.gray('  Schema deploy finished. Provider keys are still incomplete,'));
+      console.log(C.gray('  so first-time setup did not run. Add ANTHROPIC_API_KEY or'));
+      console.log(C.gray('  OPENROUTER_API_KEY to .env.local, then run npm run clyde.\n'));
+    } else if (!isConfigured(loadEnvFile())) {
+      console.log(C.gray('  Schema deploy finished. Add ANTHROPIC_API_KEY or OPENROUTER_API_KEY'));
+      console.log(C.gray('  to .env.local, then run npm run clyde.\n'));
+    } else {
+      console.log(C.gray('  Schema deploy finished. Run npm run clyde to start the app.\n'));
+    }
+    return;
+  } else if (plan.action === 'wizard') {
     // Setup wizard runs regardless of mode — credentials & schema are always needed
     const { config, projectRef, dbPassword, costSaving, useOpenRouter } = await runSetupWizard();
 
@@ -892,7 +1135,8 @@ async function main() {
     const testSpinner = createSpinner('Testing Supabase credentials...');
     const testResult = await testSupabaseCredentials(
       config.NEXT_PUBLIC_SUPABASE_URL,
-      config.SUPABASE_SERVICE_ROLE_KEY
+      config.SUPABASE_SERVICE_ROLE_KEY,
+      config.NEXT_PUBLIC_SUPABASE_ANON_KEY
     );
     if (testResult.ok) {
       testSpinner.succeed('Supabase credentials verified');
@@ -900,8 +1144,8 @@ async function main() {
     } else {
       testSpinner.fail(`Supabase credential check failed`);
       console.log(C.red(`\n  ${testResult.message}`));
-      console.log(C.gray('  You can update your Supabase credentials later in Settings > API Keys.'));
-      console.log(C.gray('  The install will continue and the app will open so you can fix this.\n'));
+      console.log(C.gray('  You can update the keys in Project Settings → API Keys (legacy tab),'));
+      console.log(C.gray('  then paste them into .env.local or re-run setup.\n'));
     }
 
     // Deploy schema (skip if credentials failed)
@@ -935,7 +1179,7 @@ async function main() {
         fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
         console.log(`  ${C.check} ${C.white('Agent provider set to OpenRouter')}`);
       } catch (err) {
-        console.log(C.yellow(`  Warning: Could not write provider setting: ${err.message}`));
+        console.log(C.orange(`  Warning: Could not write provider setting: ${err.message}`));
       }
     }
 
@@ -966,7 +1210,20 @@ async function main() {
   }
 }
 
-main().catch((err) => {
-  console.error(C.red(`\n  Fatal error: ${err.message}\n`));
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch((err) => {
+    console.error(C.red(`\n  Fatal error: ${err.message}\n`));
+    process.exit(1);
+  });
+}
+
+module.exports = {
+  main,
+  planRun,
+  isFirstRun,
+  isDockerNoise,
+  composeUpArgs,
+  composeDownArgs,
+  dockerChildEnv,
+  WIZARD_STEPS,
+};

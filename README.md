@@ -85,14 +85,14 @@ CLI          Node.js  ·  Interactive setup wizard  ·  Secure credential input
 
 The CLI checks these automatically and will let you know if anything is missing.
 
-You'll also need accounts (all have free tiers):
+You'll also need accounts (all have free tiers). Native mode checks Node / Python / Git **after** you choose Native in the wizard; Docker mode skips that install.
 
 | Service | What it's for | Required? | Where to sign up |
 |---|---|---|---|
 | **Supabase** | Database & vector search | Yes | [supabase.com](https://supabase.com) |
-| **Anthropic** | AI agents (default provider) | Yes | [console.anthropic.com](https://console.anthropic.com) |
-| **OpenAI** | Embeddings + GPT subagents | Yes | [platform.openai.com](https://platform.openai.com) |
-| **OpenRouter** | Alternative provider / subagents | Optional | [openrouter.ai](https://openrouter.ai) |
+| **Anthropic** | AI agents (default provider) | Required unless you choose OpenRouter | [console.anthropic.com](https://console.anthropic.com) |
+| **OpenRouter** | Alternative provider / subagents | Required if you skip Anthropic | [openrouter.ai](https://openrouter.ai) |
+| **OpenAI** | Embeddings (search) + optional GPT subagents | Optional | [platform.openai.com](https://platform.openai.com) |
 | **Google Gemini** | Gemini subagents | Optional | [aistudio.google.com](https://aistudio.google.com) |
 | **Telegram** | Chat with Clyde via Telegram | Optional | [BotFather](https://t.me/BotFather) |
 
@@ -113,22 +113,30 @@ cd Project-Clyde
 npm run clyde
 ```
 
-That's it. On first run, the CLI walks you through everything — credentials, database setup, dependency installation — then starts the app and opens your browser.
+That's it. The wizard runs when `.env.local` is missing **or** the three Supabase keys are missing. After that, `npm run clyde` just launches.
 
-Every run after that just launches the app.
+To apply `db/schema.sql` without starting the app:
+
+```bash
+npm run clyde -- --deploy-schema
+```
+
+That flag is handled first: it never re-runs the wizard, and it exits after schema deploy (even if Anthropic / OpenRouter keys are still missing).
 
 ### What the Setup Wizard Does
 
-When you run `npm run clyde` for the first time (no `.env.local` file), the CLI will:
+When the wizard runs, it follows this order (same as `cli/clyde.js`):
 
-1. **Check prerequisites** — verifies Node.js 20+, Python 3.10+, and Git are installed
-2. **Collect credentials** — prompts for your Supabase, Anthropic, and OpenAI keys (passwords are masked)
-3. **Choose cost mode** — toggle between Opus/Sonnet (full power) or Sonnet/Haiku (cost-saving) defaults
-4. **Generate `.env.local`** — writes your config file with all the right values (never committed to git)
-5. **Deploy the database schema** — connects directly to your Supabase Postgres instance and creates all tables, functions, and indexes automatically
-6. **Install dependencies** — runs `npm install` for the frontend and sets up a Python virtual environment with all backend packages
-7. **Create the working directory** — sets up the folder structure for agent configs, prompts, memory, and logs
-8. **Launch the app** — starts both the backend (port 8000) and frontend (port 3020), then opens your browser
+1. **Choose agent provider** — `1` Anthropic (Claude Agent SDK) or `2` OpenRouter (LangChain Deep Agents). Changeable later in Settings.
+2. **Cost-saving mode** — Anthropic path only: Clyde Opus + subagents Sonnet, or Clyde Sonnet + subagents Haiku. OpenRouter skips this prompt (pick the model in Settings).
+3. **Collect Supabase credentials** — Project URL, then legacy `anon` / `public` and `service_role` JWTs. Secret fields are hidden; paste works.
+4. **Database password** — Postgres password from **Project Settings → Database**, not your supabase.com login. Used if schema deploy falls back to the Session pooler.
+5. **Provider API keys** — Anthropic (`sk-ant-`) or OpenRouter (`sk-or-`). OpenAI embeddings (`sk-` / `sk-proj-`) are optional on both paths.
+6. **Write `.env.local`** — merges with any existing keys; never committed to git
+7. **Verify Supabase keys** — checks JWT `role` + project ref. A REST `401` with RLS is OK for a valid anon key.
+8. **Deploy the database schema** — tries direct Postgres (`db.<ref>.supabase.co`). If that host is IPv6-only, paste the **Session pooler** URI from Connect (not Direct, not Transaction pooler). Or SQL Editor → paste `db/schema.sql` → Run.
+9. **Choose how to run** — Native (Python venv + Node) or Docker. Native then checks Node 20+ / Python 3.10+ / Git and **installs dependencies**. Docker skips that install.
+10. **Launch** — binds `127.0.0.1`. If 8000 or 3020 are taken (including another container publishing `0.0.0.0:8000`), the CLI picks the next free ports and writes them into `.env.local`.
 
 All credentials are stored locally in `.env.local` and are never transmitted anywhere except directly to your own services.
 
@@ -136,12 +144,19 @@ All credentials are stored locally in `.env.local` and are never transmitted any
 
 The setup wizard will ask for:
 
-1. **Supabase Project URL** — looks like `https://abcdefgh.supabase.co` (Dashboard > Settings > API)
-2. **Supabase Anon Key** — a long string starting with `eyJ` (same page)
-3. **Supabase Service Role Key** — another `eyJ` string (click the eye icon to reveal)
-4. **Supabase Database Password** — the password you set when creating the project
-5. **Anthropic API Key** — starts with `sk-ant-` ([console.anthropic.com/settings/keys](https://console.anthropic.com/settings/keys))
-6. **OpenAI API Key** — starts with `sk-` ([platform.openai.com/api-keys](https://platform.openai.com/api-keys))
+1. **Supabase Project URL** — `https://abcdefgh.supabase.co` (gear → **Project Settings** → **API Keys**, or **Connect**)
+2. **Supabase Anon Key** — **Legacy** `anon` / `public` JWT starting with `eyJ` (not `sb_publishable_`)
+3. **Supabase Service Role Key** — **Legacy** `service_role` JWT (click the eye; not `sb_secret_`)
+4. **Supabase Database Password** — the password you set when creating the project (**Project Settings → Database**)
+5. **Anthropic API Key** — `sk-ant-` ([console.anthropic.com/settings/keys](https://console.anthropic.com/settings/keys)) **or** an OpenRouter key (`sk-or-` at [openrouter.ai/keys](https://openrouter.ai/keys))
+6. **OpenAI API Key** (optional) — embeddings only; `sk-` / `sk-proj-` at [platform.openai.com/api-keys](https://platform.openai.com/api-keys) — not the OpenAI Home page, not ChatGPT
+
+If schema deploy cannot reach the IPv6-only direct host, the wizard asks for the Session pooler URI:
+
+1. Click **Connect** at the top of the project (green button)
+2. Stay on **Connection String** (not App Frameworks / ORMs / MCP)
+3. Choose **Session pooler** — not Direct connection, not Transaction pooler
+4. Copy the URI. Host ends in `pooler.supabase.com`, port `5432`. Leave `[YOUR-PASSWORD]` as-is; the wizard uses the database password you already typed.
 
 > **Tip:** If you haven't created a Supabase project yet, go to [supabase.com](https://supabase.com), click **New Project**, pick a name, set a strong database password (save it!), choose a region, and wait about a minute for it to spin up.
 
@@ -152,13 +167,12 @@ The setup wizard will ask for:
 Once the app opens in your browser:
 
 1. Click the **Settings** icon (gear icon)
-2. Under the **System** tab, check that the status indicators show green dots next to:
-   - Anthropic API Key
-   - Supabase Connection
-   - OpenAI API Key
-3. If any show red, check the corresponding values in your `.env.local` file, then restart with `npm run clyde`
+2. Under the **System** tab, **Supabase Connection** should be green
+3. If you chose Anthropic in the wizard, **Anthropic API Key** should be green. **OpenAI API Key** can stay red until you add embeddings.
+4. If you chose OpenRouter, switch **Agent Provider** to OpenRouter if needed. Anthropic / OpenAI may stay red.
+5. If a required indicator is red, check `.env.local` (Legacy JWTs, no `sb_publishable_` / `sb_secret_`), then restart with `npm run clyde`
 
-Once all three are green, close settings and create your first chat session.
+Close settings and create your first chat session once the provider you picked can talk to its API.
 
 ---
 
@@ -174,9 +188,11 @@ You can also run the services individually if you prefer separate terminals:
 
 | Command | Description |
 |---|---|
-| `npm run clyde` | Start everything (recommended) |
-| `npm run dev:frontend` | Start only the frontend (port 3020) |
-| `npm run dev:backend` | Start only the backend (port 8000) |
+| `npm run clyde` | Start everything (recommended). Binds `127.0.0.1`; remaps 8000/3020 if they are taken |
+| `npm run clyde -- --deploy-schema` | Apply `db/schema.sql` and exit (no wizard, no launch) |
+| `npm run dev:frontend` | Start only the frontend (default port 3020) |
+| `npm run dev:backend` | Start only the backend (default port 8000) |
+| `npm test` | CLI tests (`cli/clyde.js` + `cli/lib`) |
 | `npm run lint` | Lint check |
 
 ---
@@ -186,11 +202,12 @@ You can also run the services individually if you prefer separate terminals:
 ```
 Project-Clyde/
 ├── cli/               CLI setup wizard and app launcher
-│   └── clyde.js       Entry point for `npm run clyde`
+│   ├── clyde.js       Entry point for `npm run clyde`
+│   └── lib/           Wizard helpers (env, postgres, secrets, ports) + tests
 ├── db/                Database schema
 │   └── schema.sql     Idempotent SQL (safe to re-run)
-├── frontend/          Next.js web interface (port 3020)
-├── backend/           FastAPI server + AI agents (port 8000)
+├── frontend/          Next.js web interface (default port 3020)
+├── backend/           FastAPI server + AI agents (default port 8000)
 ├── working/           Runtime data (registry, prompts, memory, workflows)
 ├── docs/              Documentation and images
 │   └── test-suite-strategy.md  Proposed test suite (review)
@@ -226,7 +243,7 @@ Open `.env.local` and fill in each value:
 # Anthropic — https://console.anthropic.com/settings/keys
 ANTHROPIC_API_KEY=sk-ant-paste-your-key-here
 
-# Supabase — Dashboard > Settings > API
+# Supabase — Project Settings → API Keys (Legacy anon / service_role)
 NEXT_PUBLIC_SUPABASE_URL=https://your-project-id.supabase.co
 NEXT_PUBLIC_SUPABASE_ANON_KEY=paste-your-anon-key-here
 SUPABASE_SERVICE_ROLE_KEY=paste-your-service-role-key-here
@@ -234,9 +251,10 @@ SUPABASE_SERVICE_ROLE_KEY=paste-your-service-role-key-here
 # OpenAI — https://platform.openai.com/api-keys
 OPENAI_API_KEY=sk-proj-paste-your-key-here
 
-# Backend (leave these as-is)
-BACKEND_URL=http://localhost:8000
-NEXT_PUBLIC_BACKEND_WS_URL=ws://localhost:8000
+# Backend — 127.0.0.1 avoids IPv6 localhost hitting another service
+BACKEND_URL=http://127.0.0.1:8000
+NEXT_PUBLIC_BACKEND_URL=http://127.0.0.1:8000
+NEXT_PUBLIC_BACKEND_WS_URL=ws://127.0.0.1:8000
 
 # Working directory — replace with the actual path on YOUR computer
 WORKING_DIR=/full/path/to/Project-Clyde/working
@@ -283,14 +301,15 @@ Open **http://localhost:3020** and verify all status indicators are green in **S
 <details>
 <summary><strong>"Cannot connect to backend"</strong></summary>
 
-Make sure the backend is running. If using `npm run clyde`, check the terminal for backend errors (prefixed with `[backend]` in teal). If running manually, verify you see `Uvicorn running on http://127.0.0.1:8000`.
+Make sure the backend is running. If using `npm run clyde`, check the terminal for backend errors (prefixed with `[backend]` in teal) and the port it actually bound — it may not be 8000. If running manually, verify you see `Uvicorn running on http://127.0.0.1:8000` (or the port in `BACKEND_URL`).
 </details>
 
 <details>
 <summary><strong>Database schema deployment failed</strong></summary>
 
-- **Connection refused** — check your Supabase URL is correct and the project is active
-- **Password authentication failed** — reset your database password in Supabase Dashboard > Settings > Database
+- **Direct host unreachable / IPv6-only** — new projects resolve `db.<ref>.supabase.co` to IPv6 only. Re-run `npm run clyde -- --deploy-schema` and paste the **Session pooler** URI from Connect (Connection String tab, port 5432, leave `[YOUR-PASSWORD]`). Or SQL Editor → paste `db/schema.sql` → Run.
+- **Password authentication failed** — this is the database password from **Project Settings → Database**, not your supabase.com login. Reset it there.
+- **Invalid anon / public key** — use the **Legacy** JWT (`eyJ…`), not `sb_publishable_`. A REST 401 with RLS does not mean the key is wrong.
 - **Already exists** — this is fine; the schema is idempotent and safe to re-run
 </details>
 
@@ -328,13 +347,15 @@ Check `.env.local` for: no extra spaces around `=`, no quotes around values, key
 
 ## Docker Deployment (Alternative)
 
-If you prefer Docker over the CLI wizard:
+Prefer the wizard: run `npm run clyde`, then choose **2. Docker**. That path still writes `.env.local` and deploys the schema first. Later launches with `RUN_MODE=docker` in `.env.local` skip the wizard.
+
+`npm run clyde` remaps host ports when 8000 or 3020 are already bound on `0.0.0.0` (another Compose stack will take them even if `127.0.0.1:8000` looks free). It sets `CLYDE_BACKEND_HOST_PORT` / `CLYDE_FRONTEND_HOST_PORT` for Compose.
+
+Raw Compose still needs a filled `.env.local`, and **must** pass it with `--env-file` so the frontend image gets the Supabase anon key at build time (`env_file:` in the YAML only reaches the running backend). If 8000 is taken, set the host ports yourself:
 
 ```bash
-docker-compose up --build
+CLYDE_BACKEND_HOST_PORT=8001 CLYDE_FRONTEND_HOST_PORT=3020 docker compose --env-file .env.local --progress quiet up --build
 ```
-
-This starts both the backend (port 8000) and frontend (port 3020) in containers. You still need a `.env.local` file — copy `.env.example` and fill in your credentials before running.
 
 The Docker setup mounts the `working/` directory and Docker socket into the backend container so agents can access files and tools.
 
@@ -342,9 +363,11 @@ The Docker setup mounts the `working/` directory and Docker socket into the back
 
 ## OpenRouter Setup (Optional)
 
-OpenRouter lets you use Clyde with any model — Claude, GPT, Gemini, Llama, DeepSeek, and more.
+OpenRouter lets you use Clyde with any model — Claude, GPT, Gemini, Llama, DeepSeek, and more. First-run setup can do this for you: choose provider **2** in the wizard.
 
-1. Get an API key from [openrouter.ai/keys](https://openrouter.ai/keys)
+To add it later:
+
+1. Get an API key from [openrouter.ai/keys](https://openrouter.ai/keys) (`sk-or-`, not an OpenAI key and not ChatGPT Plus)
 2. Add it to `.env.local`:
    ```env
    OPENROUTER_API_KEY=sk-or-your-key-here
