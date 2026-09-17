@@ -5,7 +5,10 @@
     "clyde": "node cli/clyde.js",
     "dev:frontend": "cd frontend && npm run dev",
     "dev:backend": "cd backend && bash run.sh",
-    "lint": "cd frontend && npm run lint"
+    "lint": "cd frontend && npm run lint",
+    "test": "npm run test:cli && npm run test:backend",
+    "test:cli": "node scripts/run-cli-tests.js",
+    "test:backend": "python3 scripts/run-backend-tests.py"
   },
   "dependencies": {
     "pg": "^8.13.0"
